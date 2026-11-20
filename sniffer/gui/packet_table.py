@@ -1,11 +1,9 @@
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView
 
-from sniffer.model.packet import PacketRecord
+from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
 
 HEADERS = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "Info")
-MAX_PACKETS = 100_000
-MAX_BYTES = 128 * 1024 * 1024
 
 
 class PacketTableModel(QAbstractTableModel):

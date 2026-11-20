@@ -1,12 +1,18 @@
 import ctypes
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QMainWindow, QStackedWidget
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget,
+)
 from scapy.all import conf
 
 from sniffer.capture.engine import FILTER_PRESETS, CaptureSession, CaptureSettings
 from sniffer.capture.interfaces import list_adapters
+from sniffer.capture.pcap_io import read_capture, write_capture
 from sniffer.gui.packet_table import PacketTable, PacketTableModel
 from sniffer.gui.welcome_page import WelcomePage
 
@@ -34,6 +40,8 @@ class MainWindow(QMainWindow):
         self._capture_initialized = False
         self._close_pending = False
         self._model_drops = 0
+        self._files = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetSniffer pcap")
+        self._file_task: tuple[Path, Future] | None = None
 
         self.pages = QStackedWidget()
         notice = "" if self._capture_available else self._startup_notice
@@ -47,6 +55,11 @@ class MainWindow(QMainWindow):
         self.welcome.selection_changed.connect(self._update_controls)
 
         self._setup_toolbar()
+        files = self.menuBar().addMenu("文件(&F)")
+        self._open_action = files.addAction("打开抓包文件…", self.open_capture)
+        self._open_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Open))
+        self._save_action = files.addAction("另存为…", self.save_capture)
+        self._save_action.setShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs))
         self._counts = QLabel()
         self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
         self.statusBar().addPermanentWidget(self._counts)
@@ -56,6 +69,7 @@ class MainWindow(QMainWindow):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll_capture)
+        self._timer.timeout.connect(self._poll_file)
         self._timer.start(100)
 
     def _setup_toolbar(self) -> None:
@@ -86,14 +100,24 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.auto_scroll)
 
     def _update_controls(self) -> None:
+        file_busy = self._file_task is not None
         idle = self._session is None
-        self._interfaces_action.setEnabled(idle)
-        self._start_action.setEnabled(idle and self._capture_available and self.welcome.selected_adapter is not None)
+        available = idle and not file_busy
+        has_packets = self.packet_model.rowCount() > 0
+        self._open_action.setEnabled(available)
+        self._save_action.setEnabled(available and has_packets)
+        self._interfaces_action.setEnabled(available)
+        self._start_action.setEnabled(
+            available and self._capture_available and self.welcome.selected_adapter is not None
+        )
         self._stop_action.setEnabled(not idle and not self._stopping)
-        self._restart_action.setEnabled(self._last_settings is not None and not self._stopping)
-        self._clear_action.setEnabled(idle and self.packet_model.rowCount() > 0)
-        self.capture_filter.setEnabled(idle and self._capture_available)
-        self.promiscuous.setEnabled(idle and self._capture_available)
+        self._restart_action.setEnabled(
+            not file_busy and self._last_settings is not None and not self._stopping
+            and (idle or self._capture_initialized)
+        )
+        self._clear_action.setEnabled(available and has_packets)
+        self.capture_filter.setEnabled(available and self._capture_available)
+        self.promiscuous.setEnabled(available and self._capture_available)
 
     def _update_counts(self, received: int, discarded: int) -> None:
         self._counts.setText(
@@ -106,7 +130,7 @@ class MainWindow(QMainWindow):
 
     def start_capture(self) -> None:
         adapter = self.welcome.selected_adapter
-        if self._session is not None or not self._capture_available or adapter is None:
+        if not self._start_action.isEnabled() or adapter is None:
             return
         self._start_capture(CaptureSettings(
             adapter.device, self.capture_filter.currentText().strip(), self.promiscuous.isChecked()
@@ -129,7 +153,7 @@ class MainWindow(QMainWindow):
             self._update_controls()
 
     def restart_capture(self) -> None:
-        if self._last_settings is None or self._stopping:
+        if not self._restart_action.isEnabled() or self._last_settings is None:
             return
         if self._session is None:
             self._start_capture(self._last_settings)
@@ -138,7 +162,7 @@ class MainWindow(QMainWindow):
             self.stop_capture()
 
     def clear_capture(self) -> None:
-        if self._session is None:
+        if self._clear_action.isEnabled():
             self.packet_model.replace([])
             self._model_drops = 0
             self._update_counts(0, 0)
@@ -187,12 +211,74 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
         self._update_controls()
 
+    def open_capture(self) -> None:
+        if not self._open_action.isEnabled():
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "打开抓包文件", "", "抓包文件 (*.pcap *.pcapng);;所有文件 (*)"
+        )
+        if filename:
+            path = Path(filename)
+            self.statusBar().showMessage("正在读取抓包文件…")
+            self._file_task = path, self._files.submit(read_capture, path)
+            self._update_controls()
+
+    def save_capture(self) -> None:
+        if not self._save_action.isEnabled():
+            return
+        filename, selected = QFileDialog.getSaveFileName(
+            self, "另存抓包文件", "", "PCAP (*.pcap);;PCAPNG (*.pcapng)"
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.casefold() not in (".pcap", ".pcapng"):
+            extension = ".pcapng" if selected.startswith("PCAPNG") else ".pcap"
+            path = path.with_name(path.name + extension)
+            if path.exists() and QMessageBox.question(
+                self, "替换文件", f"替换现有文件 {path.name}？"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        self.statusBar().showMessage("正在保存抓包文件…")
+        self._file_task = path, self._files.submit(write_capture, path, self.packet_model.records)
+        self._update_controls()
+
+    def _poll_file(self) -> None:
+        if self._file_task is None:
+            return
+        path, task = self._file_task
+        if not task.done():
+            return
+        self._file_task = None
+        try:
+            records = task.result()
+        except Exception as error:
+            self.statusBar().showMessage(f"文件操作失败。{error}")
+        else:
+            if records is None:
+                self.statusBar().showMessage(f"已保存 {path.name}")
+            else:
+                self.packet_model.replace(records)
+                self._model_drops = 0
+                self.pages.setCurrentWidget(self.packet_table)
+                self.packet_table.scrollToTop()
+                self._update_counts(len(records), 0)
+                self.statusBar().showMessage(f"已打开 {path.name}")
+        if self._close_pending:
+            self.close()
+        else:
+            self._update_controls()
+
     def closeEvent(self, event) -> None:
         if self._session is not None:
             self._close_pending = True
             self.stop_capture()
             event.ignore()
+        elif self._file_task is not None:
+            self._close_pending = True
+            event.ignore()
         else:
+            self._files.shutdown(wait=False)
             super().closeEvent(event)
 
 
