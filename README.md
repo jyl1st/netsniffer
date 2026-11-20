@@ -1,2 +1,2 @@
 # netsniffer
-Network packet sniffer &amp; protocol analyzer with GUI (Python + Npcap + PySide6)
+Network packet sniffer & protocol analyzer with GUI (Python + Npcap + PySide6)
