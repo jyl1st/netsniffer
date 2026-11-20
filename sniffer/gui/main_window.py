@@ -4,7 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget,
 )
@@ -14,7 +14,9 @@ from sniffer.capture.engine import CaptureSession, CaptureSettings
 from sniffer.capture.interfaces import list_adapters
 from sniffer.capture.pcap_io import read_capture_preview, write_capture
 from sniffer.gui.capture_filter import CaptureFilterBox
-from sniffer.gui.packet_table import PacketTable, PacketTableModel
+from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
+from sniffer.gui.packet_inspector import PacketInspector
+from sniffer.gui.packet_table import HEADERS, PacketTable, PacketTableModel, TimeMode
 from sniffer.gui.welcome_page import WelcomePage
 
 
@@ -49,8 +51,9 @@ class MainWindow(QMainWindow):
         self.welcome = WelcomePage(list_adapters(), notice)
         self.packet_model = PacketTableModel(self)
         self.packet_table = PacketTable(self.packet_model)
+        self.packet_inspector = PacketInspector(self.packet_model, self.packet_table)
         self.pages.addWidget(self.welcome)
-        self.pages.addWidget(self.packet_table)
+        self.pages.addWidget(self.packet_inspector)
         self.setCentralWidget(self.pages)
         self.welcome.capture_requested.connect(self.start_capture)
         self.welcome.selection_changed.connect(self._update_controls)
@@ -61,6 +64,7 @@ class MainWindow(QMainWindow):
         self._open_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Open))
         self._save_action = files.addAction("另存为…", self.save_capture)
         self._save_action.setShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs))
+        self._setup_view_menu()
         self._counts = QLabel()
         self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
         self.statusBar().addPermanentWidget(self._counts)
@@ -94,6 +98,36 @@ class MainWindow(QMainWindow):
         self.auto_scroll = QCheckBox("自动滚动")
         self.auto_scroll.setChecked(True)
         toolbar.addWidget(self.auto_scroll)
+
+    def _setup_view_menu(self) -> None:
+        view = self.menuBar().addMenu("视图(&V)")
+        columns = view.addMenu("显示列")
+        for index, title in enumerate(HEADERS):
+            action = columns.addAction(title)
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.toggled.connect(lambda shown, column=index: self.packet_table.setColumnHidden(column, not shown))
+        times = view.addMenu("时间格式")
+        modes = QActionGroup(times)
+        for mode in TimeMode:
+            action = times.addAction(mode.value)
+            action.setCheckable(True)
+            modes.addAction(action)
+            action.setChecked(mode == TimeMode.FIRST)
+            action.triggered.connect(lambda _checked, choice=mode: self._set_time_mode(choice))
+        view.addAction("着色规则…", self._edit_colors)
+
+    def _set_time_mode(self, mode: TimeMode) -> None:
+        if mode == TimeMode.ABSOLUTE:
+            self.packet_table.setColumnWidth(1, 190)
+        else:
+            self.packet_table.setColumnWidth(1, 112)
+        self.packet_model.set_time_mode(mode)
+
+    def _edit_colors(self) -> None:
+        dialog = PacketColorsDialog(self.packet_model.colors, self)
+        if dialog.exec():
+            self.packet_model.set_colors(dialog.colors())
 
     def _update_controls(self) -> None:
         file_busy = self._file_task is not None
@@ -182,7 +216,7 @@ class MainWindow(QMainWindow):
             self._last_settings = session.settings
             self.packet_model.replace([])
             self._model_drops = 0
-            self.pages.setCurrentWidget(self.packet_table)
+            self.pages.setCurrentWidget(self.packet_inspector)
             if not self._stopping:
                 self.statusBar().showMessage("正在抓包")
             self._update_controls()
@@ -262,8 +296,10 @@ class MainWindow(QMainWindow):
                 records = preview.records
                 self.packet_model.replace(records)
                 self._model_drops = 0
-                self.pages.setCurrentWidget(self.packet_table)
+                self.pages.setCurrentWidget(self.packet_inspector)
                 self.packet_table.scrollToTop()
+                if records:
+                    self.packet_table.selectRow(0)
                 self._update_counts(len(records), 0)
                 message = f"已打开 {path.name}"
                 if preview.truncated:
@@ -284,6 +320,7 @@ class MainWindow(QMainWindow):
             event.ignore()
         else:
             self.capture_filter.close_validator()
+            self.packet_inspector.close_worker()
             self._files.shutdown(wait=False)
             super().closeEvent(event)
 
