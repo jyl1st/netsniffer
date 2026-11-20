@@ -19,6 +19,12 @@ class TrafficPlot(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._samples = deque(maxlen=30)
+        self._selected = False
+
+    def set_selected(self, selected: bool) -> None:
+        if self._selected != selected:
+            self._selected = selected
+            self.update()
 
     def append(self, rate: float) -> None:
         self._samples.append(rate)
@@ -30,7 +36,8 @@ class TrafficPlot(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.Highlight), 1.5))
+        role = QPalette.ColorRole.HighlightedText if self._selected else QPalette.ColorRole.Highlight
+        painter.setPen(QPen(self.palette().color(role), 1.5))
         width, height = max(1, self.width() - 14), max(1, self.height() - 12)
         peak = max(1, max(self._samples))
         points = [
@@ -110,6 +117,7 @@ class WelcomePage(QWidget):
 
     def _record_selection(self, *_):
         self._manual_selection = True
+        self._update_plot_selection()
         self.selection_changed.emit()
 
     def _select_default(self, rates: dict[str, float]) -> None:
@@ -117,6 +125,12 @@ class WelcomePage(QWidget):
         if row >= 0:
             with QSignalBlocker(self.table):
                 self.table.setCurrentCell(row, 0)
+            self._update_plot_selection()
+
+    def _update_plot_selection(self) -> None:
+        selected = self.table.currentRow()
+        for row, plot in enumerate(self._plots):
+            plot.set_selected(row == selected)
 
     def _sample(self) -> None:
         try:
