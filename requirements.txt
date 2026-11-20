@@ -1,0 +1,6 @@
+scapy
+PySide6
+pyqtgraph
+psutil
+pytest
+pyinstaller
