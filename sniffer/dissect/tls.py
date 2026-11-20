@@ -30,6 +30,8 @@ def parse_tls(span: Span, _registry, _network) -> Field:
             _version(record, "tls.record.version", 1),
             record.number("tls.record.length", "记录长度", 3, 2),
         ]
+        if len(record) < declared_length + 5:
+            parts.append(record.field("tls.record.truncated", "TLS 记录未完整捕获", True, len(record), 0))
         if kind == 22 and len(record) > 5:
             parts.extend(_handshakes(record.sub(5)))
         elif len(record) > 5:

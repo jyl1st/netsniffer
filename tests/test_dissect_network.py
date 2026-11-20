@@ -57,6 +57,9 @@ def test_tcp_options_capture_lengths_and_checksum():
     parsed_by_scapy[TCP].chksum ^= 1
     fields = {item.name: item for item in packet_frame(parsed_by_scapy).walk()}
     assert fields["tcp.checksum.valid"].value is False
+    raw = bytes(parsed_by_scapy)
+    summary = PacketRecord.from_bytes(None, raw, LINKTYPE_ETHERNET, len(raw)).summary
+    assert summary.error and "校验和异常" in summary.info
 
 
 def test_ipv4_and_ipv6_fragments_do_not_parse_tail_as_a_transport_header():

@@ -1,10 +1,12 @@
 from pathlib import Path
+from struct import pack
 
 import pytest
-from scapy.all import DHCP, DNS, UDP, rdpcap
+from scapy.all import DHCP, DNS, IP, UDP, Ether, rdpcap
 
 from sniffer.capture.pcap_io import read_capture
 from sniffer.dissect.frame import dissect_frame
+from sniffer.model.packet import LINKTYPE_ETHERNET, PacketRecord
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
 
@@ -51,3 +53,17 @@ def test_dns_and_dhcp_crosscheck_against_scapy():
     fields = {item.name: item.value for item in dissect_frame(read_capture(dhcp_path)[0]).walk()}
     assert fields["udp.dstport"] == packet[UDP].dport
     assert fields["dhcp.option.hostname"] == dict(option for option in packet[DHCP].options if isinstance(option, tuple))["hostname"].decode()
+
+
+def test_dns_compressed_owner_keeps_the_pointer_byte_span():
+    question = b"\x07sniffer\x07example\x00" + pack("!HH", 1, 1)
+    answer = b"\xc0\x0c" + pack("!HHIH", 1, 1, 60, 4) + bytes((192, 0, 2, 20))
+    message = pack("!HHHHHH", 1, 0x8180, 1, 1, 0, 0) + question + answer
+    packet = Ether() / IP(src="192.0.2.20", dst="192.0.2.10") / UDP(sport=53, dport=49000) / message
+    raw = bytes(packet)
+    fields = {item.name: item for item in dissect_frame(PacketRecord.from_bytes(None, raw, LINKTYPE_ETHERNET, len(raw))).walk()}
+    scapy_answer = DNS(message).an[0]
+    owner = fields["dns.resp.name"]
+    assert owner.value == scapy_answer.rrname.decode().rstrip(".")
+    assert raw[owner.offset:owner.end] == b"\xc0\x0c"
+    assert fields["dns.a"].value == scapy_answer.rdata

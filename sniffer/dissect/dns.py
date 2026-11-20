@@ -18,8 +18,8 @@ def _domain_name(message: Span, offset: int) -> tuple[str, int]:
         length = message.uint(cursor)
         if length & 0xC0 == 0xC0:
             pointer = message.uint(cursor, 2) & 0x3FFF
-            if pointer >= cursor:
-                raise ParseError("DNS 压缩指针指向自身或后续位置")
+            if not 12 <= pointer < cursor:
+                raise ParseError("DNS 压缩指针未指向先前的名称标签")
             if consumed is None:
                 consumed = cursor + 2 - offset
             cursor = pointer
