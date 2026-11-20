@@ -13,6 +13,7 @@ def test_samples_are_reproducible_and_readable(tmp_path):
         "dns": 2,
         "tls_client_hello": 4,
         "application_protocols": 7,
+        "display_filters": 7,
         "icmp": 2,
         "arp": 2,
         "ipv6": 2,

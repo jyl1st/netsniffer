@@ -98,9 +98,9 @@ def dns_packets() -> list[Packet]:
     ]
 
 
-def tls_packets() -> list[Packet]:
+def tls_packets(hostname: bytes = HOSTNAME) -> list[Packet]:
     # 明文 ClientHello 只需构造记录与握手头。SNI 的列表、扩展和扩展块各有长度字段。
-    server_name = b"\x00" + len(HOSTNAME).to_bytes(2, "big") + HOSTNAME
+    server_name = b"\x00" + len(hostname).to_bytes(2, "big") + hostname
     server_names = len(server_name).to_bytes(2, "big") + server_name
     sni = b"\x00\x00" + len(server_names).to_bytes(2, "big") + server_names
     random = int(START_TIME).to_bytes(4, "big") + bytes(range(28))
@@ -164,6 +164,19 @@ def application_packets() -> list[Packet]:
     return [dhcp, mdns, ssdp, ntp, server_hello, ssh, quic]
 
 
+def display_filter_packets() -> list[Packet]:
+    http = http_packets()[3]
+    http[IP].src = "192.168.34.5"
+    query, response = dns_packets()
+    query[IP].src = "192.168.34.7"
+    syn, syn_ack, _ = tcp_handshake(443)
+    selected = tls_packets(b"bilibili.example")[-1]
+    selected[TCP].sport = 53006
+    other = tls_packets()[-1]
+    other[TCP].sport = 53007
+    return [http, query, response, syn, syn_ack, selected, other]
+
+
 def make_samples(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     arp_conflict = Ether(src=OTHER_MAC, dst=BROADCAST_MAC) / ARP(
@@ -174,6 +187,7 @@ def make_samples(output_dir: Path) -> None:
         "dns": dns_packets(),
         "tls_client_hello": tls_packets(),
         "application_protocols": application_packets(),
+        "display_filters": display_filter_packets(),
         "icmp": [
             ipv4() / ICMP(type=8, id=1, seq=1) / b"echo",
             ipv4(reply=True) / ICMP(type=0, id=1, seq=1) / b"echo",
