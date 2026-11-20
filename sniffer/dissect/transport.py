@@ -2,7 +2,7 @@ from ipaddress import ip_address
 
 from sniffer.dissect.app_detect import dissect_application
 from sniffer.dissect.checksum import checksum_field, checksum_valid, transport_checksum
-from sniffer.dissect.field import Field, ParseError, Span
+from sniffer.dissect.field import Field, ParseError, Span, partial_header
 from sniffer.dissect.registry import IPContext, Registry
 
 TCP_FLAGS = ("FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR")
@@ -10,11 +10,18 @@ TCP_OPTIONS = {0: "结束", 1: "NOP", 2: "MSS", 3: "窗口扩大", 4: "允许 SA
 
 
 def parse_tcp(span: Span, registry: Registry, network: IPContext | None) -> Field:
+    if len(span) < 20:
+        return partial_header(span, "tcp", "TCP", 20, (
+            ("tcp.srcport", "源端口", 0, 2), ("tcp.dstport", "目标端口", 2, 2),
+            ("tcp.seq", "序号", 4, 4), ("tcp.ack", "确认号", 8, 4),
+            ("tcp.flags", "标志位", 13, 1, "hex"), ("tcp.window_size", "窗口大小", 14, 2),
+            ("tcp.checksum", "校验和", 16, 2, "hex"),
+        ))
     source, destination, _, _, control = span.unpack("!HHIIH", 0)
     header_length = (control >> 12) * 4
     if header_length < 20:
         raise ParseError("TCP 报头长度小于 20 字节")
-    header = span.sub(0, header_length)
+    header = span.sub(0, min(len(span), header_length))
     flag_fields = [
         header.field(f"tcp.flags.{name.lower()}", name, bool(control & (1 << index)), 13, 1)
         for index, name in enumerate(TCP_FLAGS)
@@ -27,13 +34,15 @@ def parse_tcp(span: Span, registry: Registry, network: IPContext | None) -> Fiel
         span.field("tcp.hdr_len", "报头长度", header_length, 12, 1),
         span.sub(13, 1).layer("tcp.flags", f"标志位: 0x{control & 255:02x}", flag_fields, control & 255),
         span.number("tcp.window_size", "窗口大小", 14, 2),
-        checksum_field(span, "tcp.checksum", 16, transport_checksum(span, network, 6)),
+        checksum_field(span, "tcp.checksum", 16, transport_checksum(span, network, 6) if len(span) >= header_length else None),
         span.number("tcp.urgent_pointer", "紧急指针", 18, 2),
-        span.field("tcp.len", "有效负载长度", len(span) - header_length, 0, 0),
+        span.field("tcp.len", "已捕获负载长度", max(0, len(span) - header_length), 0, 0),
     ]
     if header_length > 20:
         options = header.sub(20)
         fields.append(options.layer("tcp.options", "TCP 选项", _tcp_options(options)))
+    if len(span) < header_length:
+        fields.append(span.missing("tcp.options.incomplete", header_length - len(span)))
     if header_length < len(span):
         fields.append(dissect_application(span.sub(header_length), registry, 6, source, destination))
     return span.layer("tcp", f"TCP · {source} → {destination}", fields)
@@ -44,9 +53,16 @@ def _tcp_options(span: Span) -> list[Field]:
     cursor = 0
     while cursor < len(span):
         kind = span.uint(cursor)
+        if kind not in (0, 1) and len(span) - cursor < 2:
+            fields.append(span.missing("tcp.option.incomplete", cursor + 2 - len(span)))
+            break
         size = 1 if kind in (0, 1) else span.uint(cursor + 1)
         if kind not in (0, 1) and size < 2:
-            raise ParseError("TCP 选项长度小于 2")
+            fields.append(span.payload(cursor, label="TCP 选项长度小于 2"))
+            break
+        if cursor + size > len(span):
+            fields.append(span.missing("tcp.option.incomplete", cursor + size - len(span)))
+            break
         option = span.sub(cursor, size)
         details = [option.number("tcp.option.kind", "类型", 0)]
         if kind not in (0, 1):
@@ -76,6 +92,11 @@ def _tcp_options(span: Span) -> list[Field]:
 
 
 def parse_udp(span: Span, registry: Registry, network: IPContext | None) -> Field:
+    if len(span) < 8:
+        return partial_header(span, "udp", "UDP", 8, (
+            ("udp.srcport", "源端口", 0, 2), ("udp.dstport", "目标端口", 2, 2),
+            ("udp.length", "长度", 4, 2),
+        ))
     source, destination, length, checksum = span.unpack("!HHHH", 0)
     if length < 8:
         raise ParseError("UDP 长度小于 8 字节")
@@ -91,7 +112,7 @@ def parse_udp(span: Span, registry: Registry, network: IPContext | None) -> Fiel
         checksum_field(section, "udp.checksum", 6, valid),
     ]
     if length > len(span):
-        fields.append(section.field("udp.truncated", "UDP 数据未完整捕获", True, len(section), 0))
+        fields.append(section.missing("udp.truncated", length - len(span)))
     if len(section) > 8:
         fields.append(dissect_application(section.sub(8), registry, 17, source, destination))
     return section.layer("udp", f"UDP · {source} → {destination}", fields)
@@ -106,6 +127,8 @@ ICMPV6_TYPES = {
 
 
 def parse_icmp(span: Span, _registry, network: IPContext | None) -> Field:
+    if len(span) < 4:
+        return partial_header(span, "icmp", "ICMP", 4, (("icmp.type", "类型", 0, 1), ("icmp.code", "代码", 1, 1)))
     kind, code = span.unpack("!BB", 0)
     valid = checksum_valid(memoryview(span.raw)[span.start:span.end]) if network and network.complete else None
     fields = [
@@ -115,28 +138,37 @@ def parse_icmp(span: Span, _registry, network: IPContext | None) -> Field:
     ]
     cursor = 4
     if kind in (0, 8, 13, 14):
-        fields.extend([span.number("icmp.ident", "标识", 4, 2), span.number("icmp.seq", "序号", 6, 2)])
-        cursor = 8
+        cursor = _icmp_numbers(span, fields, "icmp.incomplete", 8, (
+            ("icmp.ident", "标识", 4, 2), ("icmp.seq", "序号", 6, 2),
+        ))
     if kind in (13, 14):
-        for offset, name in ((8, "originate"), (12, "receive"), (16, "transmit")):
-            fields.append(span.number(f"icmp.timestamp.{name}", name, offset, 4))
-        cursor = 20
+        if len(span) >= 8:
+            cursor = _icmp_numbers(span, fields, "icmp.incomplete", 20, (
+                ("icmp.timestamp.originate", "起始", 8, 4),
+                ("icmp.timestamp.receive", "接收", 12, 4),
+                ("icmp.timestamp.transmit", "发送", 16, 4),
+            ))
     if kind == 3 and code == 4:
-        fields.append(span.number("icmp.mtu", "下一跳 MTU", 6, 2))
-        cursor = 8
+        cursor = _icmp_numbers(span, fields, "icmp.incomplete", 8, (("icmp.mtu", "下一跳 MTU", 6, 2),))
     elif kind == 5:
-        gateway = str(ip_address(span.bytes(4, 4)))
-        fields.append(span.field("icmp.redir_gw", "重定向网关", gateway, 4, 4))
+        if len(span) >= 8:
+            gateway = str(ip_address(span.bytes(4, 4)))
+            fields.append(span.field("icmp.redir_gw", "重定向网关", gateway, 4, 4))
+        else:
+            fields.append(span.missing("icmp.incomplete", 8 - len(span)))
         cursor = 8
     elif kind == 12:
-        fields.append(span.number("icmp.pointer", "错误位置", 4))
-        cursor = 8
+        cursor = _icmp_numbers(span, fields, "icmp.incomplete", 8, (("icmp.pointer", "错误位置", 4, 1),))
     if cursor < len(span):
         fields.append(span.payload(cursor, "icmp.data"))
     return span.layer("icmp", f"ICMP · {ICMP_TYPES.get(kind, kind)}", fields)
 
 
 def parse_icmpv6(span: Span, _registry, network: IPContext | None) -> Field:
+    if len(span) < 4:
+        return partial_header(span, "icmpv6", "ICMPv6", 4, (
+            ("icmpv6.type", "类型", 0, 1), ("icmpv6.code", "代码", 1, 1),
+        ))
     kind = span.uint(0)
     fields = [
         span.number("icmpv6.type", "类型", 0),
@@ -145,32 +177,32 @@ def parse_icmpv6(span: Span, _registry, network: IPContext | None) -> Field:
     ]
     cursor = 4
     if kind in (128, 129):
-        fields.extend([span.number("icmpv6.echo.identifier", "标识", 4, 2), span.number("icmpv6.echo.sequence_number", "序号", 6, 2)])
-        cursor = 8
+        cursor = _icmp_numbers(span, fields, "icmpv6.incomplete", 8, (
+            ("icmpv6.echo.identifier", "标识", 4, 2), ("icmpv6.echo.sequence_number", "序号", 6, 2),
+        ))
     elif kind in (2, 4):
         name, title = ("mtu", "MTU") if kind == 2 else ("pointer", "错误位置")
-        fields.append(span.number(f"icmpv6.{name}", title, 4, 4))
-        cursor = 8
+        cursor = _icmp_numbers(span, fields, "icmpv6.incomplete", 8, ((f"icmpv6.{name}", title, 4, 4),))
     elif kind == 133:
-        span.require(4, 4)
-        cursor = 8
+        cursor = _icmp_numbers(span, fields, "icmpv6.incomplete", 8, ())
     elif kind == 134:
-        fields.extend([
-            span.number("icmpv6.nd.ra.cur_hop_limit", "当前跳数限制", 4),
-            span.number("icmpv6.nd.ra.flags", "通告标志", 5, hexadecimal=True),
-            span.number("icmpv6.nd.ra.router_lifetime", "路由器寿命", 6, 2),
-            span.number("icmpv6.nd.ra.reachable_time", "可达时间", 8, 4),
-            span.number("icmpv6.nd.ra.retrans_timer", "重传计时", 12, 4),
-        ])
-        cursor = 16
+        cursor = _icmp_numbers(span, fields, "icmpv6.incomplete", 16, (
+            ("icmpv6.nd.ra.cur_hop_limit", "当前跳数限制", 4, 1),
+            ("icmpv6.nd.ra.flags", "通告标志", 5, 1),
+            ("icmpv6.nd.ra.router_lifetime", "路由器寿命", 6, 2),
+            ("icmpv6.nd.ra.reachable_time", "可达时间", 8, 4),
+            ("icmpv6.nd.ra.retrans_timer", "重传计时", 12, 4),
+        ))
     elif kind in (135, 136, 137):
-        if kind == 136:
+        cursor = 40 if kind == 137 else 24
+        if kind == 136 and len(span) >= 8:
             fields.append(span.number("icmpv6.nd.na.flags", "通告标志", 4, 4, hexadecimal=True))
-        fields.append(span.field("icmpv6.nd.target", "目标地址", str(ip_address(span.bytes(8, 16))), 8, 16))
-        cursor = 24
-        if kind == 137:
+        if len(span) >= 24:
+            fields.append(span.field("icmpv6.nd.target", "目标地址", str(ip_address(span.bytes(8, 16))), 8, 16))
+        if kind == 137 and len(span) >= 40:
             fields.append(span.field("icmpv6.nd.destination", "重定向目的地址", str(ip_address(span.bytes(24, 16))), 24, 16))
-            cursor = 40
+        if len(span) < cursor:
+            fields.append(span.missing("icmpv6.incomplete", cursor - len(span)))
     if cursor < len(span):
         if kind in (133, 134, 135, 136, 137):
             fields.extend(_neighbor_options(span.sub(cursor)))
@@ -179,13 +211,29 @@ def parse_icmpv6(span: Span, _registry, network: IPContext | None) -> Field:
     return span.layer("icmpv6", f"ICMPv6 · {ICMPV6_TYPES.get(kind, kind)}", fields)
 
 
+def _icmp_numbers(span: Span, fields: list[Field], missing_name: str, required: int, parts: tuple) -> int:
+    for name, label, offset, size in parts:
+        if offset + size <= len(span):
+            fields.append(span.number(name, label, offset, size))
+    if len(span) < required:
+        fields.append(span.missing(missing_name, required - len(span)))
+    return required
+
+
 def _neighbor_options(span: Span) -> list[Field]:
     result = []
     cursor = 0
     while cursor < len(span):
+        if len(span) - cursor < 2:
+            result.append(span.missing("icmpv6.opt.incomplete", cursor + 2 - len(span)))
+            break
         kind, blocks = span.unpack("!BB", cursor)
         if blocks == 0:
-            raise ParseError("ICMPv6 邻居发现选项长度为零")
+            result.append(span.payload(cursor, label="ICMPv6 邻居发现选项长度为零"))
+            break
+        if cursor + blocks * 8 > len(span):
+            result.append(span.missing("icmpv6.opt.incomplete", cursor + blocks * 8 - len(span)))
+            break
         option = span.sub(cursor, blocks * 8)
         fields = [option.number("icmpv6.opt.type", "类型", 0), option.number("icmpv6.opt.length", "长度字段", 1)]
         if kind in (1, 2) and blocks == 1:

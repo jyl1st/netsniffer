@@ -39,4 +39,5 @@ class Registry:
         try:
             return parser(span, self, network)
         except ParseError as error:
-            return span.layer("malformed", f"报文截断或格式异常 · {error}", (), str(error))
+            diagnostic = [span.missing("malformed.incomplete", error.missing)] if error.missing else []
+            return span.layer("malformed", f"报文截断或格式异常 · {error}", diagnostic, str(error))

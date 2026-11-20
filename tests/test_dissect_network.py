@@ -87,3 +87,19 @@ def test_each_truncated_prefix_stays_inside_the_captured_frame():
         record = PacketRecord.from_bytes(None, raw, LINKTYPE_ETHERNET, complete.wire_length)
         tree = dissect_frame(record)
         assert all(0 <= field.offset <= field.end <= size for field in tree.walk())
+
+
+def test_snaplen_keeps_ethernet_mac_and_tcp_option_before_cut():
+    packet = Ether(dst="02:00:00:00:00:02", src="02:00:00:00:00:01") / IP(
+        src="192.0.2.1", dst="192.0.2.2",
+    ) / TCP(flags="S", options=[("MSS", 1460), ("Timestamp", (1, 2))])
+    raw = bytes(packet)
+    short_link = dissect_frame(PacketRecord.from_bytes(None, raw[:10], LINKTYPE_ETHERNET, len(raw)))
+    link_fields = {field.name: field for field in short_link.walk()}
+    assert link_fields["eth.dst"].value == "02:00:00:00:00:02"
+    assert "抓包截断" in link_fields["eth.incomplete"].show
+
+    short_option = dissect_frame(PacketRecord.from_bytes(None, raw[:60], LINKTYPE_ETHERNET, len(raw)))
+    transport_fields = {field.name: field for field in short_option.walk()}
+    assert transport_fields["tcp.options.mss_val"].value == 1460
+    assert "抓包截断" in transport_fields["tcp.options.incomplete"].show

@@ -140,6 +140,7 @@ def _transport(
         payload_start = end
         checksum_end = None
         reset = False
+        keepalive = False
         if protocol == 6 and size >= 14:
             value = raw[offset + 13]
             reset = bool(value & 4)
@@ -149,6 +150,8 @@ def _transport(
             header_size = (raw[offset + 12] >> 4) * 4
             if 20 <= header_size <= size:
                 payload_start, checksum_end = offset + header_size, end
+                keepalive = (value == 0x10 and not raw[offset + 12] & 15
+                             and network.complete and end - payload_start == 1)
         if protocol == 17 and size >= 8:
             udp_length, udp_checksum = unpack_from("!HH", raw, offset + 4)
             if udp_length >= 8:
@@ -158,8 +161,13 @@ def _transport(
                     checksum_end = end
         application = identify_application(raw, payload_start, end, protocol, source_port, destination_port)
         if application:
-            name = application.protocol
-            info = f"{name}（{application.basis}） · {info}"
+            if application.protocol:
+                name = application.protocol
+                info = f"{application.info} · {name}（{application.basis}） · {info}"
+            else:
+                info += f" · {application.info}"
+        if keepalive:
+            info = f"TCP Keep-Alive? · {info}"
         if checksum_end is not None and network.complete:
             bad_checksum |= transport_checksum(Span(raw, offset, checksum_end), network, protocol) is False
         if bad_checksum:

@@ -22,7 +22,7 @@ SAMPLES = Path(__file__).resolve().parents[1] / "samples"
     ("application_protocols", 3, "NTP", "ntp.flags.mode", 3),
     ("application_protocols", 4, "TLS", "tls.handshake.extensions_alpn_str", "h2"),
     ("application_protocols", 5, "SSH", "ssh.banner", "SSH-2.0-NetSnifferSample"),
-    ("application_protocols", 6, "QUIC", "quic.dcid", "11223344"),
+    ("application_protocols", 6, "QUIC", "quic.dcid", "8394c8f03e515708"),
 ])
 def test_application_fields_with_absolute_offsets(name, index, application, key, value):
     record = read_capture(SAMPLES / f"{name}.pcap")[index]

@@ -4,6 +4,87 @@ from sniffer.dissect.field import Field, ParseError, Span
 
 TYPES = {1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA", 33: "SRV", 41: "OPT", 255: "ANY"}
 MAX_DNS_ENTRIES = 256
+OPCODES = {0: "标准", 1: "反向", 2: "状态", 4: "通知", 5: "更新", 6: "DSO"}
+RCODES = {1: "格式错误", 2: "服务器失败", 3: "名称不存在", 4: "未实现", 5: "拒绝"}
+
+
+def dns_info(span: Span, *, tcp: bool = False) -> str | None:
+    """快速验证报头、名称、记录和长度，同时提取摘要所需的少量值。"""
+    incomplete = False
+    try:
+        if tcp:
+            size = span.uint(0, 2)
+            if size < 12:
+                return None
+            incomplete = size > len(span) - 2
+            span = span.sub(2, min(size, len(span) - 2))
+        xid, flags, questions, answers, authority, additional = span.unpack("!HHHHHH", 0)
+        opcode = (flags >> 11) & 15
+        if opcode not in OPCODES or flags & 0x40:
+            return None
+        if questions + answers + authority + additional > MAX_DNS_ENTRIES:
+            return None
+    except ParseError:
+        return None
+    response = bool(flags & 0x8000)
+    title = f"{OPCODES[opcode]}{'应答' if response else '查询'} 0x{xid:04x}"
+    cursor = 12
+    question = answer = None
+    try:
+        for index in range(questions):
+            name, length = _domain_name(span, cursor)
+            kind, _ = span.unpack("!HH", cursor + length)
+            if not index:
+                question = f"{TYPES.get(kind, kind)} {name}"
+            cursor += length + 4
+        for index in range(answers + authority + additional):
+            owner, name_size = _domain_name(span, cursor)
+            start = cursor + name_size
+            kind, _, _, size = span.unpack("!HHIH", start)
+            data = span.sub(start + 10, size)
+            result = _summary_rdata(span, data, kind) if index < answers or kind in (2, 5, 12, 15, 16, 33) else None
+            if index < answers and (answer is None or kind in (1, 28)):
+                preview = f"{TYPES.get(kind, kind)} {result or owner}"
+                if answer is None or not answer.startswith(("A ", "AAAA ")):
+                    answer = preview
+            cursor = start + 10 + size
+    except ParseError as error:
+        if not incomplete or not error.missing or question is None:
+            return None
+    if not incomplete and cursor != len(span):
+        # 有些实现为 DNS 消息附加零填充；它不会覆盖报头声明的记录。
+        if any(span.raw[span.start + cursor:span.end]):
+            return None
+    rcode = flags & 15
+    parts = [title]
+    if response and rcode:
+        parts.append(RCODES.get(rcode, f"应答码 {rcode}"))
+    if question:
+        parts.append(question)
+    if response and answer:
+        parts.append(answer)
+    return " ".join(parts)
+
+
+def _summary_rdata(message: Span, data: Span, kind: int) -> str | None:
+    if kind in (1, 28):
+        size = 4 if kind == 1 else 16
+        if len(data) != size:
+            raise ParseError("DNS 地址记录长度异常")
+        return str(ip_address(data.bytes(0, size)))
+    if kind in (2, 5, 12, 15, 33):
+        prefix = {15: 2, 33: 6}.get(kind, 0)
+        name, size = _domain_name(message, data.start - message.start + prefix)
+        if prefix + size != len(data):
+            raise ParseError("DNS 名称记录长度异常")
+        return name
+    if kind == 16:
+        cursor = 0
+        while cursor < len(data):
+            size = data.uint(cursor)
+            data.require(cursor + 1, size)
+            cursor += 1 + size
+    return None
 
 
 def _domain_name(message: Span, offset: int) -> tuple[str, int]:
@@ -48,20 +129,31 @@ def parse_dns_tcp(span: Span, _registry, _network) -> Field:
     records = []
     cursor = 0
     while cursor < len(span) and len(records) < 16:
-        size = span.uint(cursor, 2)
-        if size > len(span) - cursor - 2:
-            records.append(span.payload(cursor, label="TCP DNS 消息未完整捕获"))
+        if len(span) - cursor < 2:
+            records.append(span.missing("dns.tcp.incomplete", 2 - (len(span) - cursor), tcp_segment=True))
             break
-        block = span.sub(cursor, size + 2)
-        records.append(block.layer("dns.tcp.message", "TCP DNS 消息", [
+        size = span.uint(cursor, 2)
+        block = span.sub(cursor, min(size + 2, len(span) - cursor))
+        parts = [
             block.number("dns.tcp.length", "消息长度", 0, 2),
             _parse_message(block.sub(2), mdns=False),
-        ]))
-        cursor += size + 2
+        ]
+        if len(block) < size + 2:
+            parts.append(block.missing("dns.tcp.incomplete", size + 2 - len(block), tcp_segment=True))
+        records.append(block.layer("dns.tcp.message", "TCP DNS 消息", parts))
+        cursor += len(block)
     return span.layer("dns.tcp", "TCP DNS", records)
 
 
 def _parse_message(span: Span, *, mdns: bool) -> Field:
+    if len(span) < 12:
+        fields = [
+            span.number(name, title, offset, 2)
+            for name, title, offset in _HEADER_PARTS
+            if len(span) >= offset + 2
+        ]
+        fields.append(span.missing("dns.incomplete", 12 - len(span)))
+        return span.layer("dns", "DNS · 报头不完整", fields)
     transaction, flags, questions, answers, authority, additional = span.unpack("!HHHHHH", 0)
     is_response = bool(flags & 0x8000)
     fields = [
@@ -88,12 +180,21 @@ def _parse_message(span: Span, *, mdns: bool) -> Field:
     ):
         start = cursor
         entries = []
-        for _ in range(min(count, budget)):
-            if kind == "qry":
-                item, cursor = _question(span, cursor, mdns)
+        try:
+            for _ in range(min(count, budget)):
+                if kind == "qry":
+                    item, cursor = _question(span, cursor, mdns)
+                else:
+                    item, cursor = _record(span, cursor, mdns)
+                entries.append(item)
+        except ParseError as error:
+            if entries:
+                fields.append(span.sub(start, cursor - start).layer(f"dns.section.{kind}", title, entries))
+            if error.missing:
+                fields.append(span.missing("dns.incomplete", error.missing))
             else:
-                item, cursor = _record(span, cursor, mdns)
-            entries.append(item)
+                fields.append(span.field("malformed", f"DNS 数据异常 · {error}", None, cursor, len(span) - cursor))
+            break
         budget -= len(entries)
         if entries:
             fields.append(span.sub(start, cursor - start).layer(f"dns.section.{kind}", title, entries))
@@ -104,9 +205,22 @@ def _parse_message(span: Span, *, mdns: bool) -> Field:
     return span.layer("dns", f"DNS {label} · 事务 0x{transaction:04x}", fields)
 
 
+_HEADER_PARTS = (
+    ("dns.id", "事务 ID", 0), ("dns.flags", "标志", 2),
+    ("dns.count.queries", "查询数", 4), ("dns.count.answers", "应答数", 6),
+    ("dns.count.auth_rr", "授权记录数", 8), ("dns.count.add_rr", "附加记录数", 10),
+)
+
+
 def _question(span: Span, start: int, mdns: bool) -> tuple[Field, int]:
     name, length = _domain_name(span, start)
     type_at = start + length
+    if len(span) - type_at < 4:
+        fields = [span.field("dns.qry.name", "名称", name, start, length)]
+        if len(span) - type_at >= 2:
+            fields.append(span.number("dns.qry.type", "类型", type_at, 2))
+        fields.append(span.missing("dns.incomplete", type_at + 4 - len(span)))
+        return span.sub(start).layer("dns.question", name, fields), len(span)
     kind, qclass = span.unpack("!HH", type_at)
     fields = [
         span.field("dns.qry.name", "名称", name, start, length),
@@ -123,7 +237,7 @@ def _record(span: Span, start: int, mdns: bool) -> tuple[Field, int]:
     type_at = start + length
     kind, rrclass, _, data_length = span.unpack("!HHIH", type_at)
     offset = type_at + 10
-    data = span.sub(offset, data_length)
+    data = span.sub(offset, min(data_length, len(span) - offset))
     fields = [
         span.field("dns.resp.name", "名称", name, start, length),
         span.field("dns.resp.type", "类型", kind, type_at, 2, text=TYPES.get(kind, str(kind))),
@@ -133,8 +247,14 @@ def _record(span: Span, start: int, mdns: bool) -> tuple[Field, int]:
     ]
     if mdns:
         fields.append(span.field("dns.resp.cache_flush", "清除缓存", bool(rrclass & 0x8000), type_at + 2, 2))
-    fields.extend(_record_data(span, data, kind))
-    return span.sub(start, length + 10 + data_length).layer("dns.record", f"{name} · {TYPES.get(kind, kind)}", fields), offset + data_length
+    if len(data) == data_length:
+        fields.extend(_record_data(span, data, kind))
+    else:
+        if len(data):
+            fields.append(data.payload(label="已捕获的资源记录数据"))
+        fields.append(data.missing("dns.incomplete", data_length - len(data)))
+    end = offset + len(data)
+    return span.sub(start, end - start).layer("dns.record", f"{name} · {TYPES.get(kind, kind)}", fields), end
 
 
 def _record_data(message: Span, data: Span, kind: int) -> list[Field]:

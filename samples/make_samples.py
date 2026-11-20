@@ -158,7 +158,9 @@ def application_packets() -> list[Packet]:
     handshake = b"\x02" + len(body).to_bytes(3, "big") + body
     server_hello = tcp_segment(443, "PA", 2001, 1001, reply=True) / (b"\x16" + version + pack("!H", len(handshake)) + handshake)
     ssh = tcp_segment(2222, "PA", 2001, 1001, reply=True) / b"SSH-2.0-NetSnifferSample\r\n"
-    quic = ipv4() / UDP(sport=CLIENT_PORT, dport=4443) / bytes.fromhex("c0 00 00 00 01 04 11 22 33 44 02 55 66 00 01 00")
+    # RFC 9001 附录 A.2 的完整、受保护的 QUIC v1 Client Initial。
+    initial = bytes.fromhex(Path(__file__).with_name("quic_initial_rfc9001.hex").read_text(encoding="ascii"))
+    quic = ipv4() / UDP(sport=CLIENT_PORT, dport=4443) / initial
     return [dhcp, mdns, ssdp, ntp, server_hello, ssh, quic]
 
 

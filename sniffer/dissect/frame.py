@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sniffer.dissect.app_detect import parse_quic, parse_ssh
+from sniffer.dissect.app_detect import parse_ssh
 from sniffer.dissect.dhcp import parse_dhcp
 from sniffer.dissect.dns import parse_dns, parse_dns_tcp, parse_mdns
 from sniffer.dissect.ethernet import parse_arp, parse_ethernet, parse_loopback, parse_raw_ip
@@ -8,6 +8,7 @@ from sniffer.dissect.field import Field, Span
 from sniffer.dissect.http import parse_http, parse_ssdp
 from sniffer.dissect.ip import parse_ipv4, parse_ipv6
 from sniffer.dissect.ntp import parse_ntp
+from sniffer.dissect.quic import parse_quic
 from sniffer.dissect.registry import Registry
 from sniffer.dissect.tls import parse_tls
 from sniffer.dissect.transport import parse_icmp, parse_icmpv6, parse_tcp, parse_udp
@@ -45,7 +46,7 @@ def dissect_frame(
     record: PacketRecord, number: int = 1, previous_time: Decimal | None = None,
     *, registry: Registry = REGISTRY,
 ) -> Field:
-    span = Span(record.raw, 0, len(record.raw))
+    span = Span(record.raw, 0, len(record.raw), len(record.raw) < record.wire_length)
     children = [
         span.field("frame.number", "编号", number, 0, 0),
         span.field("frame.len", "线上长度", record.wire_length, 0, 0),
