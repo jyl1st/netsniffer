@@ -122,10 +122,11 @@ class WelcomePage(QWidget):
 
     def _select_default(self, rates: dict[str, float]) -> None:
         row = preferred_adapter(self.adapters, rates)
-        if row >= 0:
+        if row >= 0 and row != self.table.currentRow():
             with QSignalBlocker(self.table):
                 self.table.setCurrentCell(row, 0)
             self._update_plot_selection()
+            self.selection_changed.emit()
 
     def _update_plot_selection(self) -> None:
         selected = self.table.currentRow()

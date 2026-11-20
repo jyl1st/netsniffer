@@ -6,13 +6,14 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget,
+    QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget,
 )
 from scapy.all import conf
 
-from sniffer.capture.engine import FILTER_PRESETS, CaptureSession, CaptureSettings
+from sniffer.capture.engine import CaptureSession, CaptureSettings
 from sniffer.capture.interfaces import list_adapters
-from sniffer.capture.pcap_io import read_capture, write_capture
+from sniffer.capture.pcap_io import read_capture_preview, write_capture
+from sniffer.gui.capture_filter import CaptureFilterBox
 from sniffer.gui.packet_table import PacketTable, PacketTableModel
 from sniffer.gui.welcome_page import WelcomePage
 
@@ -83,15 +84,10 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         toolbar.addWidget(QLabel("抓包过滤"))
-        self.capture_filter = QComboBox()
-        self.capture_filter.setEditable(True)
-        self.capture_filter.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.capture_filter.addItem("")
-        self.capture_filter.addItems(FILTER_PRESETS)
-        self.capture_filter.setMinimumWidth(170)
-        self.capture_filter.lineEdit().setPlaceholderText("BPF 表达式")
+        self.capture_filter = CaptureFilterBox()
         self.capture_filter.lineEdit().returnPressed.connect(self.start_capture)
         toolbar.addWidget(self.capture_filter)
+        toolbar.addWidget(self.capture_filter.feedback)
 
         self.promiscuous = QCheckBox("混杂模式")
         toolbar.addWidget(self.promiscuous)
@@ -104,11 +100,12 @@ class MainWindow(QMainWindow):
         idle = self._session is None
         available = idle and not file_busy
         has_packets = self.packet_model.rowCount() > 0
+        adapter = self.welcome.selected_adapter
         self._open_action.setEnabled(available)
         self._save_action.setEnabled(available and has_packets)
         self._interfaces_action.setEnabled(available)
         self._start_action.setEnabled(
-            available and self._capture_available and self.welcome.selected_adapter is not None
+            available and self._capture_available and adapter is not None
         )
         self._stop_action.setEnabled(not idle and not self._stopping)
         self._restart_action.setEnabled(
@@ -116,6 +113,10 @@ class MainWindow(QMainWindow):
             and (idle or self._capture_initialized)
         )
         self._clear_action.setEnabled(available and has_packets)
+        device = adapter.device if adapter else None
+        if self._session is not None:
+            device = self._session.settings.device
+        self.capture_filter.set_validation_device(device if self._capture_available else None)
         self.capture_filter.setEnabled(available and self._capture_available)
         self.promiscuous.setEnabled(available and self._capture_available)
 
@@ -220,7 +221,7 @@ class MainWindow(QMainWindow):
         if filename:
             path = Path(filename)
             self.statusBar().showMessage("正在读取抓包文件…")
-            self._file_task = path, self._files.submit(read_capture, path)
+            self._file_task = path, self._files.submit(read_capture_preview, path)
             self._update_controls()
 
     def save_capture(self) -> None:
@@ -251,19 +252,23 @@ class MainWindow(QMainWindow):
             return
         self._file_task = None
         try:
-            records = task.result()
+            preview = task.result()
         except Exception as error:
             self.statusBar().showMessage(f"文件操作失败。{error}")
         else:
-            if records is None:
+            if preview is None:
                 self.statusBar().showMessage(f"已保存 {path.name}")
             else:
+                records = preview.records
                 self.packet_model.replace(records)
                 self._model_drops = 0
                 self.pages.setCurrentWidget(self.packet_table)
                 self.packet_table.scrollToTop()
                 self._update_counts(len(records), 0)
-                self.statusBar().showMessage(f"已打开 {path.name}")
+                message = f"已打开 {path.name}"
+                if preview.truncated:
+                    message += f" · 达到会话上限，仅加载前 {len(records):,} 包"
+                self.statusBar().showMessage(message)
         if self._close_pending:
             self.close()
         else:
@@ -278,6 +283,7 @@ class MainWindow(QMainWindow):
             self._close_pending = True
             event.ignore()
         else:
+            self.capture_filter.close_validator()
             self._files.shutdown(wait=False)
             super().closeEvent(event)
 

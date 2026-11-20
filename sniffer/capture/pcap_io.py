@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -11,7 +12,17 @@ NANOSECONDS = 10**9
 MAX_FRAME_BYTES = 262_144
 
 
+@dataclass(frozen=True, slots=True)
+class CapturePreview:
+    records: list[PacketRecord]
+    truncated: bool
+
+
 def read_capture(path: Path) -> list[PacketRecord]:
+    return read_capture_preview(path).records
+
+
+def read_capture_preview(path: Path) -> CapturePreview:
     records = []
     stored_bytes = 0
     with RawPcapReader(str(path)) as reader:
@@ -21,6 +32,9 @@ def read_capture(path: Path) -> list[PacketRecord]:
                 data, metadata = reader._read_packet(size=MAX_FRAME_BYTES)
             except EOFError:
                 break
+            stored_bytes += len(data)
+            if len(records) >= MAX_PACKETS or stored_bytes > MAX_BYTES:
+                return CapturePreview(records, truncated=True)
             if is_pcapng:
                 linktype = metadata.linktype
                 ticks = metadata.tshigh << 32 | metadata.tslow if metadata.tshigh is not None else None
@@ -31,11 +45,8 @@ def read_capture(path: Path) -> list[PacketRecord]:
                 linktype = reader.linktype
                 resolution = NANOSECONDS if reader.nano else 10**6
                 timestamp = Decimal(metadata.sec) + Decimal(metadata.usec) / resolution
-            stored_bytes += len(data)
-            if len(records) >= MAX_PACKETS or stored_bytes > MAX_BYTES:
-                raise ValueError("文件超过当前会话上限（100,000 包或 128 MiB 帧数据）。")
             records.append(PacketRecord.from_bytes(timestamp, data, linktype, metadata.wirelen))
-    return records
+    return CapturePreview(records, truncated=False)
 
 
 def write_capture(path: Path, records: Sequence[PacketRecord]) -> None:

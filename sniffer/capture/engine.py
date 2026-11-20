@@ -1,15 +1,17 @@
-from ctypes import byref
+from ctypes import POINTER, byref, c_ubyte, create_string_buffer, string_at
 from dataclasses import dataclass
 from decimal import Decimal
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 
-from scapy.all import AsyncSniffer, conf
+from scapy.all import conf
 from scapy.error import Scapy_Exception
+from scapy.utils import decode_locale_str
 
+from sniffer.capture.bpf import install_capture_filter
 from sniffer.model.packet import PacketRecord
 
-FILTER_PRESETS = ("tcp port 443", "tcp", "udp", "port 53", "ip", "ip6", "icmp or icmp6", "arp")
+IDLE_WAIT_SECONDS = 0.01
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,14 +53,14 @@ class CaptureSession:
         with self._lock:
             return self._received, self._discarded + self._driver_drops
 
-    def _receive(self, packet, linktype: int) -> None:
+    def _receive(self, header, data, linktype: int) -> None:
         # 队列满时先跳过解析，避免让抓包线程在过载时做额外工作。
         discarded = self._queue.full()
         if not discarded:
-            raw = packet.original
-            record = PacketRecord.from_bytes(
-                Decimal(str(packet.time)), raw, linktype, packet.wirelen or len(raw)
-            )
+            # Npcap 会复用接收缓冲区，帧字节必须在下次读取前复制出来。
+            raw = string_at(data, header.caplen)
+            timestamp = Decimal(header.ts.tv_sec) + Decimal(header.ts.tv_usec).scaleb(-6)
+            record = PacketRecord.from_bytes(timestamp, raw, linktype, header.len)
             try:
                 self._queue.put_nowait(record)
             except Full:
@@ -82,46 +84,37 @@ class CaptureSession:
             self.done.set()
 
     def _capture(self, listener) -> None:
-        pcap = listener.pcap_fd
-        linktype = pcap.datalink()
-        expression = self.settings.expression.strip()
-        if "\x00" in expression:
-            raise ValueError("BPF 表达式含有空字符。")
-        if expression:
-            try:
-                pcap.setfilter(expression)
-            except Scapy_Exception as error:
-                raise ValueError(f"BPF 编译或安装失败。{error}") from error
-        if self._stop.is_set():
-            return
-        sniffer = AsyncSniffer(
-            opened_socket=listener,
-            store=False,
-            prn=lambda packet: self._receive(packet, linktype),
-            started_callback=self.ready.set,
+        from scapy.libs.winpcapy import (
+            PCAP_ERRBUF_SIZE, pcap_geterr, pcap_next_ex, pcap_pkthdr, pcap_setnonblock,
         )
-        sniffer.start()
-        # stop_cb 在 started_callback 前才创建，提前调用 stop 会触发 Scapy 的启动竞态。
-        while sniffer.thread.is_alive():
-            if self._stop.is_set() and self.ready.wait(0.05):
-                if sniffer.running:
-                    try:
-                        sniffer.stop(join=False)
-                    except Scapy_Exception:
-                        if sniffer.running:
-                            raise
-                break
-            sniffer.thread.join(0.05)
-        sniffer.join()
-        if not self._stop.is_set():
-            raise OSError("网卡停止返回数据，抓包已结束。")
-        if not listener.closed:
-            self._read_driver_drops(pcap)
 
-    def _read_driver_drops(self, pcap) -> None:
+        handle = listener.pcap_fd.pcap
+        linktype = listener.pcap_fd.datalink()
+        install_capture_filter(handle, self.settings.expression)
+        errbuf = create_string_buffer(PCAP_ERRBUF_SIZE)
+        if pcap_setnonblock(handle, 1, errbuf) != 0:
+            raise OSError(f"无法设置 Npcap 非阻塞模式。{decode_locale_str(errbuf.value)}")
+
+        header = POINTER(pcap_pkthdr)()
+        data = POINTER(c_ubyte)()
+        header_ptr, data_ptr = byref(header), byref(data)
+        self.ready.set()
+        try:
+            while not self._stop.is_set():
+                result = pcap_next_ex(handle, header_ptr, data_ptr)
+                if result == 1:
+                    self._receive(header.contents, data, linktype)
+                elif result == 0:
+                    self._stop.wait(IDLE_WAIT_SECONDS)
+                else:
+                    raise OSError(f"读取 Npcap 帧失败。{decode_locale_str(pcap_geterr(handle) or b'')}")
+        finally:
+            self._read_driver_drops(handle)
+
+    def _read_driver_drops(self, handle) -> None:
         from scapy.libs.winpcapy import pcap_stat, pcap_stats
 
         stats = pcap_stat()
-        if pcap_stats(pcap.pcap, byref(stats)) == 0:
+        if pcap_stats(handle, byref(stats)) == 0:
             with self._lock:
                 self._driver_drops = stats.ps_drop

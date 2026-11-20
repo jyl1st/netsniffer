@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from sniffer.capture import pcap_io
 from sniffer.capture.pcap_io import read_capture, write_capture
 from sniffer.model.packet import LINKTYPE_NULL, PacketRecord
 
@@ -37,3 +38,26 @@ def test_pcapng_preserves_mixed_link_types(tmp_path):
     with pytest.raises(ValueError, match="多种链路类型"):
         write_capture(pcap, records)
     assert pcap.read_bytes() == b"existing file"
+
+
+@pytest.mark.parametrize("suffix", [".pcap", ".pcapng"])
+def test_capture_preview_stops_at_the_first_frame_beyond_the_limit(tmp_path, monkeypatch, suffix):
+    records = read_capture(SAMPLE)
+    target = tmp_path / f"preview{suffix}"
+    write_capture(target, records)
+
+    monkeypatch.setattr(pcap_io, "MAX_PACKETS", len(records))
+    exact = pcap_io.read_capture_preview(target)
+    assert exact.records == records
+    assert not exact.truncated
+
+    monkeypatch.setattr(pcap_io, "MAX_PACKETS", 3)
+    preview = pcap_io.read_capture_preview(target)
+    assert preview.records == records[:3]
+    assert preview.truncated
+
+    monkeypatch.setattr(pcap_io, "MAX_PACKETS", len(records))
+    monkeypatch.setattr(pcap_io, "MAX_BYTES", sum(len(record.raw) for record in records[:2]))
+    preview = pcap_io.read_capture_preview(target)
+    assert preview.records == records[:2]
+    assert preview.truncated
