@@ -49,3 +49,7 @@ TLS 记录的声明长度可以大于单个 TCP 段的负载。按已捕获边�
 字段别名查询两端的实际字段。单独使用布尔字段时按字段值判断，保证 `tcp.flags.syn && !tcp.flags.ack` 匹配初始 SYN。多值字段的相等比较取任意匹配，不等比较要求所有现存值均不匹配。没有字段时比较返回假。只有明确识别的协议参与协议存在性过滤。
 
 `matches` 使用 Qt 提供的 PCRE2，并限制单次匹配的工作量。右键准备表达式只更新输入，右键应用会立即提交。历史和书签保存在本地应用设置中。[Wireshark 显示过滤器](https://www.wireshark.org/docs/man-pages/wireshark-filter.html) · [PCRE2 匹配限制](https://www.pcre.org/current/doc/html/pcre2pattern.html#SEC4)
+
+每阶段收尾时运行 `python -m tools.compare_tshark` 对照已覆盖的验收项，可用 `--stage` 单独运行一阶段。阶段 3 的三条计划表达式分别命中样例的第 1、2 帧，第 4 帧和第 6 帧。加入两条端口比较用例及阶段 2 的三条已解析字段检查后，共八项与 TShark 一致。TShark 的布尔字段用显式值比较来对照初始 SYN。
+
+验收图 `docs/images/phase3-loopback-display-filter.png` 来自在 Windows 上使用 Npcap 捕获的四条本机 TCP 连接。列表在抓包过程中套用显示过滤，36 帧中只显示 4 个初始 SYN，丢弃 0 帧。清除显示过滤即可查看全部捕获帧。

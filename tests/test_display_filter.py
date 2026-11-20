@@ -57,6 +57,19 @@ def test_ipv6_alias_boolean_presence_and_unconfirmed_subtree():
     assert compile_filter("   ") is None
 
 
+def test_parentheses_and_operator_precedence_allow_different_results():
+    tree = Field("frame", "Frame", None, 0, 0, (
+        Field("http", "HTTP", None, 0, 0),
+        Field("tcp.flags.syn", "SYN", True, 0, 0),
+        Field("tcp.flags.ack", "ACK", False, 0, 0),
+    ))
+    assert compile_filter("http || dns && udp").matches(tree)
+    assert not compile_filter("(http || dns) && udp").matches(tree)
+    assert not compile_filter("!http && udp").matches(tree)
+    assert compile_filter("!(http && udp)").matches(tree)
+    assert compile_filter("!tcp.flags.ack && tcp.flags.syn || dns").matches(tree)
+
+
 @pytest.mark.parametrize("source,position", [
     ("udp & tcp", 4), ("dns &&", 6), ("(tcp or udp", 11),
     ('http.host == "abc', 13), ("tcp.no_such_field", 0),

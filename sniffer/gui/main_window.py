@@ -1,20 +1,24 @@
 import ctypes
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
+from ipaddress import ip_address
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget,
+    QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 from scapy.all import conf
 
 from sniffer.capture.engine import CaptureSession, CaptureSettings
 from sniffer.capture.interfaces import list_adapters
 from sniffer.capture.pcap_io import read_capture_preview, write_capture
+from sniffer.filter.fields import known_field
 from sniffer.gui.capture_filter import CaptureFilterBox
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
+from sniffer.gui.display_filter import DisplayFilterController
+from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_inspector import PacketInspector
 from sniffer.gui.packet_table import HEADERS, PacketTable, PacketTableModel, TimeMode
 from sniffer.gui.welcome_page import WelcomePage
@@ -43,6 +47,8 @@ class MainWindow(QMainWindow):
         self._capture_initialized = False
         self._close_pending = False
         self._model_drops = 0
+        self._received = 0
+        self._discarded = 0
         self._files = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetSniffer pcap")
         self._file_task: tuple[Path, Future] | None = None
 
@@ -52,8 +58,23 @@ class MainWindow(QMainWindow):
         self.packet_model = PacketTableModel(self)
         self.packet_table = PacketTable(self.packet_model)
         self.packet_inspector = PacketInspector(self.packet_model, self.packet_table)
+        self.display_filter = DisplayFilterBar()
+        self._display_controller = DisplayFilterController(self.packet_model, self)
+        self.display_filter.submitted.connect(self._display_controller.apply)
+        self._display_controller.progress.connect(self.display_filter.show_progress)
+        self._display_controller.failed.connect(self.display_filter.show_failure)
+        self.packet_page = QWidget()
+        packet_layout = QVBoxLayout(self.packet_page)
+        packet_layout.setContentsMargins(0, 0, 0, 0)
+        packet_layout.setSpacing(0)
+        packet_layout.addWidget(self.display_filter)
+        packet_layout.addWidget(self.packet_inspector, 1)
+        self.packet_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.packet_table.customContextMenuRequested.connect(self._packet_filter_menu)
+        self.packet_inspector.details.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.packet_inspector.details.customContextMenuRequested.connect(self._field_filter_menu)
         self.pages.addWidget(self.welcome)
-        self.pages.addWidget(self.packet_inspector)
+        self.pages.addWidget(self.packet_page)
         self.setCentralWidget(self.pages)
         self.welcome.capture_requested.connect(self.start_capture)
         self.welcome.selection_changed.connect(self._update_controls)
@@ -70,6 +91,8 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._counts)
         self.statusBar().showMessage(self._startup_notice)
         self._update_counts(0, 0)
+        self.packet_model.rowsInserted.connect(self._visible_rows_added)
+        self.packet_model.modelReset.connect(self._refresh_counts)
         self._update_controls()
 
         self._timer = QTimer(self)
@@ -133,7 +156,7 @@ class MainWindow(QMainWindow):
         file_busy = self._file_task is not None
         idle = self._session is None
         available = idle and not file_busy
-        has_packets = self.packet_model.rowCount() > 0
+        has_packets = bool(self.packet_model.records)
         adapter = self.welcome.selected_adapter
         self._open_action.setEnabled(available)
         self._save_action.setEnabled(available and has_packets)
@@ -155,9 +178,67 @@ class MainWindow(QMainWindow):
         self.promiscuous.setEnabled(available and self._capture_available)
 
     def _update_counts(self, received: int, discarded: int) -> None:
+        self._received, self._discarded = received, discarded
+        self._refresh_counts()
+
+    def _refresh_counts(self) -> None:
         self._counts.setText(
-            f"已捕获 {received:,}   已显示 {self.packet_model.rowCount():,}   丢弃 {discarded:,}"
+            f"已捕获 {self._received:,}   已显示 {self.packet_model.rowCount():,}   丢弃 {self._discarded:,}"
         )
+
+    def _visible_rows_added(self, *_args) -> None:
+        if self._session is not None and self.auto_scroll.isChecked():
+            self.packet_table.scrollToBottom()
+        self._refresh_counts()
+
+    def _field_filter_menu(self, position) -> None:
+        view = self.packet_inspector.details
+        item = view.itemAt(position)
+        if item is None:
+            return
+        field = item.data(0, Qt.ItemDataRole.UserRole)
+        if field is None:
+            return
+        ancestor = item.parent()
+        while ancestor is not None:
+            parent_field = ancestor.data(0, Qt.ItemDataRole.UserRole)
+            if parent_field is not None and parent_field.name == "app.port_hint":
+                return
+            ancestor = ancestor.parent()
+        view.setCurrentItem(item)
+        self.display_filter.field_menu(field.name, field.value, view.viewport().mapToGlobal(position))
+
+    def _packet_filter_menu(self, position) -> None:
+        index = self.packet_table.indexAt(position)
+        if not index.isValid():
+            return
+        self.packet_table.selectRow(index.row())
+        row = self.packet_model.record_index(index.row())
+        record = self.packet_model.records[row]
+        summary = record.summary
+        column = index.column()
+        name, value = "frame.number", row + 1
+        if column in (2, 3):
+            is_source = column == 2
+            direction = "src" if is_source else "dst"
+            text = summary.source if is_source else summary.destination
+            if text:
+                try:
+                    version = ip_address(text).version
+                except ValueError:
+                    name = f"eth.{direction}"
+                else:
+                    name = f"ip.{direction}" if version == 4 else f"ipv6.{direction}"
+                    if summary.protocol == "ARP" and version == 4:
+                        name = f"arp.{direction}.proto_ipv4"
+                value = text
+        elif column == 4:
+            protocol = {"IPv4": "ip", "Ethernet": "eth"}.get(summary.protocol, summary.protocol.casefold())
+            if known_field(protocol):
+                name, value = protocol, None
+        elif column == 5:
+            name, value = "frame.len", record.wire_length
+        self.display_filter.field_menu(name, value, self.packet_table.viewport().mapToGlobal(position))
 
     def _show_interfaces(self) -> None:
         self.pages.setCurrentWidget(self.welcome)
@@ -216,7 +297,7 @@ class MainWindow(QMainWindow):
             self._last_settings = session.settings
             self.packet_model.replace([])
             self._model_drops = 0
-            self.pages.setCurrentWidget(self.packet_inspector)
+            self.pages.setCurrentWidget(self.packet_page)
             if not self._stopping:
                 self.statusBar().showMessage("正在抓包")
             self._update_controls()
@@ -224,8 +305,6 @@ class MainWindow(QMainWindow):
         batch = session.drain()
         if batch:
             self._model_drops += self.packet_model.append(batch)
-            if self.auto_scroll.isChecked():
-                self.packet_table.scrollToBottom()
         received, discarded = session.counts()
         self._update_counts(received, discarded + self._model_drops)
         if session.done.is_set() and not batch:
@@ -296,9 +375,9 @@ class MainWindow(QMainWindow):
                 records = preview.records
                 self.packet_model.replace(records)
                 self._model_drops = 0
-                self.pages.setCurrentWidget(self.packet_inspector)
+                self.pages.setCurrentWidget(self.packet_page)
                 self.packet_table.scrollToTop()
-                if records:
+                if self.packet_model.rowCount():
                     self.packet_table.selectRow(0)
                 self._update_counts(len(records), 0)
                 message = f"已打开 {path.name}"
@@ -320,6 +399,7 @@ class MainWindow(QMainWindow):
             event.ignore()
         else:
             self.capture_filter.close_validator()
+            self._display_controller.close()
             self.packet_inspector.close_worker()
             self._files.shutdown(wait=False)
             super().closeEvent(event)

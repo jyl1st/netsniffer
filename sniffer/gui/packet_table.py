@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView
 
@@ -19,16 +19,22 @@ class TimeMode(Enum):
 
 
 class PacketTableModel(QAbstractTableModel):
+    records_appended = Signal()
+    records_replaced = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.records: list[PacketRecord] = []
+        self._visible: list[int] | None = None
         self._first_time = None
         self._stored_bytes = 0
         self._time_mode = TimeMode.FIRST
         self.set_colors(DEFAULT_COLORS)
 
     def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self.records)
+        if parent.isValid():
+            return 0
+        return len(self.records) if self._visible is None else len(self._visible)
 
     def columnCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(HEADERS)
@@ -41,7 +47,7 @@ class PacketTableModel(QAbstractTableModel):
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
-        row = index.row()
+        row = self.record_index(index.row())
         record = self.records[row]
         summary = record.summary
         if role in (Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole):
@@ -80,16 +86,16 @@ class PacketTableModel(QAbstractTableModel):
 
     def set_time_mode(self, mode: TimeMode) -> None:
         self._time_mode = mode
-        if self.records:
-            self.dataChanged.emit(self.index(0, 1), self.index(len(self.records) - 1, 1))
+        if self.rowCount():
+            self.dataChanged.emit(self.index(0, 1), self.index(self.rowCount() - 1, 1))
 
     def set_colors(self, colors: dict[str, str | None]) -> None:
         self.colors = dict(colors)
         self._background = {name: QColor(value) for name, value in colors.items() if value}
         self._foreground = {name: readable_text(value) for name, value in self._background.items()}
-        if self.records:
+        if self.rowCount():
             self.dataChanged.emit(
-                self.index(0, 0), self.index(len(self.records) - 1, len(HEADERS) - 1),
+                self.index(0, 0), self.index(self.rowCount() - 1, len(HEADERS) - 1),
                 [Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
             )
 
@@ -106,20 +112,43 @@ class PacketTableModel(QAbstractTableModel):
                 self._first_time = next(
                     (item.timestamp for item in additions if item.timestamp is not None), None
                 )
-            first = len(self.records)
-            self.beginInsertRows(QModelIndex(), first, first + len(additions) - 1)
-            self.records.extend(additions)
-            self.endInsertRows()
+            if self._visible is None:
+                first = len(self.records)
+                self.beginInsertRows(QModelIndex(), first, first + len(additions) - 1)
+                self.records.extend(additions)
+                self.endInsertRows()
+            else:
+                self.records.extend(additions)
+            self.records_appended.emit()
         return len(records) - len(additions)
 
     def replace(self, records: list[PacketRecord]) -> None:
         self.beginResetModel()
         self.records = records
+        if self._visible is not None:
+            self._visible = []
         self._stored_bytes = sum(len(record.raw) for record in records)
         self._first_time = next(
             (item.timestamp for item in records if item.timestamp is not None), None
         )
         self.endResetModel()
+        self.records_replaced.emit()
+
+    def record_index(self, visible_row: int) -> int:
+        return visible_row if self._visible is None else self._visible[visible_row]
+
+    def begin_filter(self, enabled: bool) -> None:
+        self.beginResetModel()
+        self._visible = [] if enabled else None
+        self.endResetModel()
+
+    def append_matches(self, original_rows: list[int]) -> None:
+        if not original_rows or self._visible is None:
+            return
+        first = len(self._visible)
+        self.beginInsertRows(QModelIndex(), first, first + len(original_rows) - 1)
+        self._visible.extend(original_rows)
+        self.endInsertRows()
 
 
 class PacketTable(QTableView):

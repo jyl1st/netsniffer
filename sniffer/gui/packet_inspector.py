@@ -78,10 +78,11 @@ class PacketInspector(QSplitter):
         self.details.show_message("选择一个包以查看协议字段。")
 
     def _select_packet(self, index, _previous) -> None:
-        row = index.row()
-        if row < 0 or row >= self._packets.rowCount():
+        visible_row = index.row()
+        if visible_row < 0 or visible_row >= self._packets.rowCount():
             self._clear()
             return
+        row = self._packets.record_index(visible_row)
         record = self._packets.records[row]
         previous_time = self._packets.records[row - 1].timestamp if row else None
         key = self._revision, row
