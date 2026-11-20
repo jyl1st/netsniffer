@@ -3,9 +3,12 @@
 import argparse
 from decimal import Decimal
 from pathlib import Path
+from struct import pack
 
 from scapy.all import (
     ARP,
+    BOOTP,
+    DHCP,
     DNS,
     DNSQR,
     DNSRR,
@@ -124,6 +127,41 @@ def arp_packets() -> list[Packet]:
     ]
 
 
+def application_packets() -> list[Packet]:
+    hostname = "实验设备.local".encode("utf-8")
+    dhcp = (
+        Ether(src=CLIENT_MAC, dst=BROADCAST_MAC)
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(xid=0x12345678, chaddr=bytes.fromhex(CLIENT_MAC.replace(":", "")))
+        / DHCP(options=[("message-type", "discover"), ("hostname", b"sniffer-lab"), "end"])
+    )
+    mdns = (
+        Ether(src=CLIENT_MAC, dst="01:00:5e:00:00:fb")
+        / IP(src=CLIENT_IP, dst="224.0.0.251", ttl=255)
+        / UDP(sport=5353, dport=5353)
+        / DNS(id=0, rd=0, qd=DNSQR(qname=hostname))
+    )
+    ssdp = (
+        Ether(src=CLIENT_MAC, dst="01:00:5e:7f:ff:fa")
+        / IP(src=CLIENT_IP, dst="239.255.255.250")
+        / UDP(sport=CLIENT_PORT, dport=1900)
+        / b'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n'
+    )
+    ntp = ipv4() / UDP(sport=CLIENT_PORT, dport=123) / (
+        b"\x23\x00\x06\xec" + bytes(36) + pack("!II", 3_908_988_800, 1 << 31)
+    )
+    # TLS 1.2 ServerHello 的 ALPN 可在明文握手中解析。
+    version = b"\x03\x03"
+    alpn = b"\x00\x10\x00\x05\x00\x03\x02h2"
+    body = version + bytes(range(32)) + b"\x00\xc0\x2f\x00" + pack("!H", len(alpn)) + alpn
+    handshake = b"\x02" + len(body).to_bytes(3, "big") + body
+    server_hello = tcp_segment(443, "PA", 2001, 1001, reply=True) / (b"\x16" + version + pack("!H", len(handshake)) + handshake)
+    ssh = tcp_segment(2222, "PA", 2001, 1001, reply=True) / b"SSH-2.0-NetSnifferSample\r\n"
+    quic = ipv4() / UDP(sport=CLIENT_PORT, dport=4443) / bytes.fromhex("c0 00 00 00 01 04 11 22 33 44 02 55 66 00 01 00")
+    return [dhcp, mdns, ssdp, ntp, server_hello, ssh, quic]
+
+
 def make_samples(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     arp_conflict = Ether(src=OTHER_MAC, dst=BROADCAST_MAC) / ARP(
@@ -133,6 +171,7 @@ def make_samples(output_dir: Path) -> None:
         "tcp_http": http_packets(),
         "dns": dns_packets(),
         "tls_client_hello": tls_packets(),
+        "application_protocols": application_packets(),
         "icmp": [
             ipv4() / ICMP(type=8, id=1, seq=1) / b"echo",
             ipv4(reply=True) / ICMP(type=0, id=1, seq=1) / b"echo",
