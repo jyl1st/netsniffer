@@ -1,0 +1,144 @@
+from collections import deque
+
+from PySide6.QtCore import QPointF, QSignalBlocker, QTimer, Signal
+from PySide6.QtGui import QPainter, QPalette, QPen, QPolygonF
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from sniffer.capture.interfaces import Adapter, preferred_adapter, read_counters
+
+
+class TrafficPlot(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._samples = deque(maxlen=30)
+
+    def append(self, rate: float) -> None:
+        self._samples.append(rate)
+        self.setToolTip(f"收发合计 {rate / 1024:,.1f} KiB/s")
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if not self._samples:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.Highlight), 1.5))
+        width, height = max(1, self.width() - 14), max(1, self.height() - 12)
+        peak = max(1, max(self._samples))
+        points = [
+            QPointF(7 + (30 - len(self._samples) + index) * width / 29, 6 + height * (1 - rate / peak))
+            for index, rate in enumerate(self._samples)
+        ]
+        if len(points) == 1:
+            painter.drawPoint(points[0])
+        else:
+            painter.drawPolyline(QPolygonF(points))
+
+
+class WelcomePage(QWidget):
+    capture_requested = Signal()
+    selection_changed = Signal()
+
+    def __init__(self, adapters: list[Adapter], notice: str = "", parent=None):
+        super().__init__(parent)
+        self.adapters = adapters
+        self._previous_sample = None
+        self._manual_selection = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        title = QLabel("选择抓包网卡")
+        font = title.font()
+        font.setPointSize(16)
+        font.setBold(True)
+        title.setFont(font)
+        layout.addWidget(title)
+
+        hint = QLabel(notice or "双击网卡开始抓包。流量曲线显示最近 30 秒的收发速率。")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.table = QTableWidget(len(adapters), 6)
+        self.table.setHorizontalHeaderLabels(("名称", "描述", "类型", "IP 地址", "MAC 地址", "流量"))
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().hide()
+        self.table.verticalHeader().setDefaultSectionSize(42)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for column, width in ((0, 180), (2, 58), (3, 180), (4, 133), (5, 110)):
+            self.table.setColumnWidth(column, width)
+        layout.addWidget(self.table)
+
+        self._plots = []
+        for row, adapter in enumerate(adapters):
+            addresses = "\n".join(adapter.ipv4 + adapter.ipv6)
+            values = (adapter.name, adapter.description, adapter.kind, addresses or "—", adapter.mac)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.table.setItem(row, column, item)
+            plot = TrafficPlot()
+            self._plots.append(plot)
+            self.table.setCellWidget(row, 5, plot)
+
+        self._select_default({})
+        self.table.currentCellChanged.connect(self._record_selection)
+        self.table.cellClicked.connect(self._record_selection)
+        self.table.cellDoubleClicked.connect(lambda *_: self.capture_requested.emit())
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._sample)
+        if adapters:
+            self._sample()
+            self._timer.start()
+
+    @property
+    def selected_adapter(self) -> Adapter | None:
+        row = self.table.currentRow()
+        return self.adapters[row] if row >= 0 else None
+
+    def _record_selection(self, *_):
+        self._manual_selection = True
+        self.selection_changed.emit()
+
+    def _select_default(self, rates: dict[str, float]) -> None:
+        row = preferred_adapter(self.adapters, rates)
+        if row >= 0:
+            with QSignalBlocker(self.table):
+                self.table.setCurrentCell(row, 0)
+
+    def _sample(self) -> None:
+        try:
+            current = read_counters()
+        except OSError:
+            return
+
+        previous = self._previous_sample
+        self._previous_sample = current
+        if previous is None:
+            return
+
+        now, totals = current
+        old_time, old_totals = previous
+        interval = max(0.001, now - old_time)
+        rates = {
+            name: max(0, total - old_totals[name]) / interval
+            for name, total in totals.items()
+            if name in old_totals
+        }
+        for adapter, plot in zip(self.adapters, self._plots):
+            if adapter.name in rates:
+                plot.append(rates[adapter.name])
+        if not self._manual_selection:
+            self._select_default(rates)

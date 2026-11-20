@@ -3,6 +3,9 @@ import sys
 from PySide6.QtWidgets import QMainWindow
 from scapy.all import conf
 
+from sniffer.capture.interfaces import list_adapters
+from sniffer.gui.welcome_page import WelcomePage
+
 
 def create_main_window() -> QMainWindow:
     window = QMainWindow()
@@ -16,4 +19,5 @@ def create_main_window() -> QMainWindow:
     else:
         status = "未检测到 Npcap"
     window.statusBar().showMessage(status)
+    window.setCentralWidget(WelcomePage(list_adapters(), notice="" if conf.use_pcap else status))
     return window
