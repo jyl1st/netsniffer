@@ -1,10 +1,12 @@
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-from sniffer.analysis.stats import Counts, StatsSnapshot, conversations, endpoints, protocol_hierarchy
+from sniffer.analysis.stats import Counts, StatsSnapshot, conversations, endpoints, io_buckets, protocol_hierarchy
 from sniffer.capture.pcap_io import read_capture
 from sniffer.gui.packet_table import PacketTableModel
+from tools.compare_stats_tshark import _tshark_io
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
 
@@ -59,3 +61,25 @@ def test_endpoints_split_source_and_destination_counts():
     assert client.received == server.sent == Counts(1, 106)
     assert (client.frames, client.bytes) == (2, 181)
     assert all(row.address[1] is None for row in groups["IPv4"])
+
+
+def test_io_buckets_use_capture_origin_and_left_closed_boundaries():
+    records = read_capture(SAMPLES / "tcp_http.pcap")
+    origin = records[0].timestamp
+    snapshot = StatsSnapshot((
+        (2, replace(records[1], timestamp=origin + Decimal("0.099999"))),
+        (3, replace(records[2], timestamp=origin + Decimal("0.1"))),
+        (4, replace(records[3], timestamp=origin + Decimal("0.199999"))),
+        (6, replace(records[5], timestamp=origin + Decimal("0.3"))),
+    ), origin)
+    buckets = io_buckets(snapshot, Decimal("0.1"))
+    assert [(row.index, row.first_frame, row.counts) for row in buckets] == [
+        (0, 2, Counts(1, 54)), (1, 3, Counts(2, 154)), (3, 6, Counts(1, 54)),
+    ]
+    bucket, = io_buckets(snapshot)
+    assert (bucket.index, bucket.first_frame, bucket.counts) == (0, 2, Counts(4, 262))
+
+
+def test_tshark_io_parser_accepts_integer_and_final_duration_intervals():
+    report = "|  0 <> 1  |      4 |   262 |\n|  1 <> Dur|      3 |   251 |"
+    assert _tshark_io(report) == {Decimal(0): (4, 262), Decimal(1): (3, 251)}

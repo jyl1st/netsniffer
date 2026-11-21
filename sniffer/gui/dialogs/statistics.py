@@ -1,13 +1,17 @@
 from concurrent.futures import Future, ThreadPoolExecutor
 from decimal import Decimal
+from functools import partial
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QTimer, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView, QLabel, QMenu, QTabWidget, QTableView,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView, QLabel, QMenu, QTabWidget,
+    QTableView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from sniffer.analysis.stats import ADDRESS_GROUPS, Conversation, Counts, EndpointStats, conversations, endpoints, protocol_hierarchy
+from sniffer.analysis.stats import (
+    ADDRESS_GROUPS, IO_INTERVALS, Conversation, Counts, EndpointStats, IOBucket, conversations, endpoints, io_buckets,
+    protocol_hierarchy,
+)
 from sniffer.gui.packet_table import PacketTableModel
 
 
@@ -20,6 +24,7 @@ class StatisticsDialog(QDialog):
         self.capture_records = packets.records
         self.requested_filter: str | None = None
         self.requested_stream: int | None = None
+        self.requested_frame: int | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetSniffer statistics")
         self._job: Future | None = None
         self._count = 0
@@ -263,3 +268,82 @@ class EndpointStatsDialog(_AddressStatsDialog):
                 f"({ip}.src == {address} && {protocol}.srcport == {port}) || "
                 f"({ip}.dst == {address} && {protocol}.dstport == {port})"
             )
+
+
+class IOGraphDialog(StatisticsDialog):
+    def __init__(self, packets, parent=None):
+        import pyqtgraph as pg
+
+        super().__init__(packets, "IO 图表", io_buckets, parent)
+        self.resize(880, 515)
+        self._buckets: list[IOBucket] = []
+        self.view = QWidget()
+        content = QVBoxLayout(self.view)
+        content.setContentsMargins(0, 0, 0, 0)
+        controls = QHBoxLayout()
+        self._interval = QComboBox()
+        for interval in IO_INTERVALS:
+            self._interval.addItem(f"{interval} 秒", interval)
+        self._interval.setCurrentIndex(1)
+        controls.addWidget(QLabel("分桶间隔"))
+        controls.addWidget(self._interval)
+        self._metric = QComboBox()
+        self._metric.addItems(("帧/秒", "字节/秒"))
+        controls.addSpacing(12)
+        controls.addWidget(QLabel("纵轴"))
+        controls.addWidget(self._metric)
+        controls.addStretch()
+        content.addLayout(controls)
+
+        self._plot = pg.PlotWidget(background="white")
+        self._plot.setLabel("bottom", "相对时间", units="s")
+        self._plot.showGrid(x=True, y=True, alpha=0.20)
+        self._curve = self._plot.plot(pen=pg.mkPen("#007a78", width=2))
+        self._points = pg.ScatterPlotItem(size=8, pen=pg.mkPen(None), brush=pg.mkBrush("#007a78"))
+        self._points.sigClicked.connect(self._point_clicked)
+        self._plot.addItem(self._points)
+        content.addWidget(self._plot, 1)
+        content.addWidget(QLabel("单击曲线上的标记可定位到该时间段的第一帧。"))
+        self.layout_main.insertWidget(0, self.view, 1)
+        self._interval.currentIndexChanged.connect(self.refresh)
+        self._metric.currentIndexChanged.connect(self._draw)
+        self.refresh()
+
+    def refresh(self) -> None:
+        self._analyze = partial(io_buckets, interval=self._interval.currentData())
+        super().refresh()
+
+    def show_result(self, buckets: list[IOBucket]) -> None:
+        self._buckets = buckets
+        self._draw()
+
+    def _draw(self) -> None:
+        interval = float(self._interval.currentData())
+        unit = self._metric.currentText()
+        self._plot.setLabel("left", unit)
+        self._plot.getAxis("left").enableAutoSIPrefix(False)
+        rate = [(bucket.counts.bytes if self._metric.currentIndex() else bucket.counts.frames) / interval
+                for bucket in self._buckets]
+        times = [bucket.index * interval for bucket in self._buckets]
+        line_x, line_y = [], []
+        for index, bucket in enumerate(self._buckets):
+            if index:
+                start = self._buckets[index - 1].index + 1
+                end = bucket.index - 1
+                if start <= end:
+                    # 只画空档两端的零值，避免长时间空档产生大量空桶。
+                    line_x.append(start * interval)
+                    line_y.append(0)
+                    if start != end:
+                        line_x.append(end * interval)
+                        line_y.append(0)
+            line_x.append(times[index])
+            line_y.append(rate[index])
+        self._curve.setData(line_x, line_y)
+        self._points.setData(x=times, y=rate, data=[bucket.first_frame for bucket in self._buckets])
+        self._plot.autoRange()
+
+    def _point_clicked(self, _item, points, _event) -> None:
+        if points:
+            self.requested_frame = int(points[0].data())
+            self.accept()

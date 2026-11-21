@@ -1,11 +1,12 @@
 """对抓包快照中已有的帧摘要做统计。"""
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_FLOOR
 
 from sniffer.model.packet import LINKTYPE_ETHERNET, LINKTYPE_LOOP, LINKTYPE_NULL, PacketRecord
 
 ADDRESS_GROUPS = ("IPv4", "IPv6", "TCP", "UDP")
+IO_INTERVALS = (Decimal("0.1"), Decimal(1), Decimal(10))
 Address = tuple[str, int | None]
 
 
@@ -171,3 +172,28 @@ def endpoints(snapshot: StatsSnapshot) -> dict[str, list[EndpointStats]]:
             entries[source].sent.add(packet.wire_length)
             entries[destination].received.add(packet.wire_length)
     return {name: list(entries.values()) for name, entries in groups.items()}
+
+
+@dataclass(slots=True)
+class IOBucket:
+    index: int
+    first_frame: int
+    counts: Counts = field(default_factory=Counts)
+
+
+def io_buckets(snapshot: StatsSnapshot, interval: Decimal = Decimal(1)) -> list[IOBucket]:
+    """按左闭右开的时间区间分桶。快照没有流量的桶隐含为零。"""
+    if interval <= 0:
+        raise ValueError("分桶间隔必须大于零。")
+    if snapshot.origin is None:
+        return []
+    buckets: dict[int, IOBucket] = {}
+    for frame, packet in snapshot.frames:
+        if packet.timestamp is None:
+            continue
+        offset = packet.timestamp - snapshot.origin
+        index = int((offset / interval).to_integral_value(rounding=ROUND_FLOOR))
+        if index not in buckets:
+            buckets[index] = IOBucket(index, frame)
+        buckets[index].counts.add(packet.wire_length)
+    return [buckets[index] for index in sorted(buckets)]
