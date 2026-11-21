@@ -23,6 +23,7 @@ from sniffer.gui.dialogs.flow_graph_dialog import FlowGraphDialog
 from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
 from sniffer.gui.dialogs.process_streams import ProcessStreamsDialog
+from sniffer.gui.dialogs.statistics import ProtocolHierarchyDialog
 from sniffer.gui.display_filter import DisplayFilterController
 from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_inspector import PacketInspector
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self._setup_view_menu()
         statistics = self.menuBar().addMenu("统计(&S)")
         statistics.addAction("TCP 时序图…", self._show_flow_graph)
+        statistics.addAction("协议层级…", lambda: self._show_statistics(ProtocolHierarchyDialog))
         analysis = self.menuBar().addMenu("分析(&A)")
         analysis.addAction("专家信息…", lambda: self._show_capture_analysis(ExpertInfoDialog))
         analysis.addAction("安全告警…", lambda: self._show_capture_analysis(SecurityAlertsDialog))
@@ -328,6 +330,11 @@ class MainWindow(QMainWindow):
         frame, records = dialog.frame_number, dialog.capture_records
         dialog.deleteLater()
         self._locate_capture_frame(frame, records)
+
+    def _show_statistics(self, dialog_type) -> None:
+        dialog = dialog_type(self.packet_model, self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _locate_capture_frame(self, frame: int | None, records: list[PacketRecord]) -> None:
         if frame is None:

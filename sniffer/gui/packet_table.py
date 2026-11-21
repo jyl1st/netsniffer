@@ -232,6 +232,15 @@ class PacketTableModel(QAbstractTableModel):
     def record_index(self, visible_row: int) -> int:
         return visible_row if self._visible is None else self._visible[visible_row]
 
+    def statistics_snapshot(self):
+        from sniffer.analysis.stats import StatsSnapshot
+
+        if self._visible is None:
+            frames = tuple(enumerate(self.records, 1))
+        else:
+            frames = tuple((index + 1, self.records[index]) for index in self._visible)
+        return StatsSnapshot(frames, self._first_time), self._visible is not None
+
     def visible_row(self, record_index: int) -> int | None:
         if not 0 <= record_index < len(self.records):
             return None
