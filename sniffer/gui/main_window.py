@@ -7,7 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QStackedWidget, QVBoxLayout,
+    QWidget,
 )
 from scapy.all import conf
 
@@ -16,6 +17,7 @@ from sniffer.capture.interfaces import list_adapters
 from sniffer.capture.pcap_io import read_capture_preview, write_capture
 from sniffer.filter.fields import known_field
 from sniffer.gui.capture_filter import CaptureFilterBox
+from sniffer.gui.dialogs.flow_graph_dialog import FlowGraphDialog
 from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
 from sniffer.gui.dialogs.process_streams import ProcessStreamsDialog
@@ -89,6 +91,8 @@ class MainWindow(QMainWindow):
         self._save_action = files.addAction("另存为…", self.save_capture)
         self._save_action.setShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs))
         self._setup_view_menu()
+        statistics = self.menuBar().addMenu("统计(&S)")
+        statistics.addAction("TCP 时序图…", self._show_flow_graph)
         self._counts = QLabel()
         self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
         self.statusBar().addPermanentWidget(self._counts)
@@ -218,7 +222,8 @@ class MainWindow(QMainWindow):
             return
         self.packet_table.selectRow(index.row())
         row = self.packet_model.record_index(index.row())
-        record = self.packet_model.records[row]
+        records = self.packet_model.records
+        record = records[row]
         summary = record.summary
         owners = record.process_owners
         column = index.column()
@@ -247,8 +252,11 @@ class MainWindow(QMainWindow):
             name, value = "proc.pid", owners[0].pid
         menu = QMenu(self.packet_table)
         follow = None
+        flow_graph = None
         if record.stream_id is not None and summary.flow is not None:
             follow = menu.addAction(f"追踪 {summary.flow.protocol.upper()} 流…")
+            if summary.flow.protocol == "tcp":
+                flow_graph = menu.addAction("TCP 时序图…")
         if owners:
             if len(owners) == 1:
                 actions = menu
@@ -264,19 +272,64 @@ class MainWindow(QMainWindow):
         self.display_filter.add_field_actions(menu, name, value)
         chosen = menu.exec(self.packet_table.viewport().mapToGlobal(position))
         selected_follow = follow is not None and chosen == follow
+        selected_graph = flow_graph is not None and chosen == flow_graph
         menu.deleteLater()
         if selected_follow:
             self._follow_stream(record)
+        elif selected_graph and records is self.packet_model.records:
+            self._open_flow_graph(record.stream_id)
 
     def _follow_stream(self, record: PacketRecord) -> None:
         flow, number = record.summary.flow, record.stream_id
         if flow is None or number is None:
             return
-        records = tuple(self.packet_model.records)
+        records = self.packet_model.records
         self.display_filter.apply_expression(f"{flow.protocol}.stream == {number}")
-        dialog = FollowStreamDialog(records, flow.protocol, number, self)
+        dialog = FollowStreamDialog(tuple(records), flow.protocol, number, self)
         dialog.exec()
+        open_graph = dialog.requested_flow_graph
         dialog.deleteLater()
+        if open_graph and records is self.packet_model.records:
+            self._open_flow_graph(number)
+
+    def _show_flow_graph(self) -> None:
+        number = 0
+        rows = self.packet_table.selectionModel().selectedRows()
+        if rows:
+            record = self.packet_model.records[self.packet_model.record_index(rows[0].row())]
+            flow = record.summary.flow
+            if flow is not None and flow.protocol == "tcp" and record.stream_id is not None:
+                number = record.stream_id
+        self._open_flow_graph(number)
+
+    def _open_flow_graph(self, number: int) -> None:
+        records = self.packet_model.records
+        dialog = FlowGraphDialog(tuple(records), number, self)
+        dialog.exec()
+        frame = dialog.frame_number
+        dialog.deleteLater()
+        if frame is None:
+            return
+        if records is not self.packet_model.records:
+            self.statusBar().showMessage("抓包记录已更换，无法定位原帧。", 5000)
+            return
+
+        original = frame - 1
+        row = self.packet_model.visible_row(original)
+        details = [f"已定位到第 {frame:,} 帧"]
+        if row is None:
+            self.display_filter.clear()
+            row = original
+            details.append("已清除隐藏该帧的显示过滤")
+        if self._session is not None and self.auto_scroll.isChecked():
+            self.auto_scroll.setChecked(False)
+            details.append("已暂停自动滚动")
+        self.pages.setCurrentWidget(self.packet_page)
+        self.packet_table.selectRow(row)
+        column = next((index for index in range(len(HEADERS)) if not self.packet_table.isColumnHidden(index)), 0)
+        self.packet_table.scrollTo(self.packet_model.index(row, column), QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.packet_table.setFocus()
+        self.statusBar().showMessage(" · ".join(details), 5000)
 
     def _show_process_streams(self) -> None:
         dialog = ProcessStreamsDialog(self.packet_model, self)

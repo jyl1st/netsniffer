@@ -70,6 +70,7 @@ class FollowStreamDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"追踪 {protocol.upper()} 流 {number}")
         self.resize(920, 600)
+        self.requested_flow_graph = False
         self._filename = f"{protocol}-stream-{number}"
         self._stream: FollowStream | None = None
         self._labels = ("", "")
@@ -137,6 +138,9 @@ class FollowStreamDialog(QDialog):
         actions.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("关闭")
+        if protocol == "tcp":
+            self._flow_graph = buttons.addButton("时序图", QDialogButtonBox.ButtonRole.ActionRole)
+            self._flow_graph.clicked.connect(self._open_flow_graph)
         self._save = buttons.addButton("保存为…", QDialogButtonBox.ButtonRole.ActionRole)
         self._save.setEnabled(False)
         buttons.rejected.connect(self.reject)
@@ -153,6 +157,10 @@ class FollowStreamDialog(QDialog):
         self._timer.setInterval(25)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
+
+    def _open_flow_graph(self) -> None:
+        self.requested_flow_graph = True
+        self.accept()
 
     def done(self, result: int) -> None:
         self._timer.stop()

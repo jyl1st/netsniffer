@@ -232,6 +232,14 @@ class PacketTableModel(QAbstractTableModel):
     def record_index(self, visible_row: int) -> int:
         return visible_row if self._visible is None else self._visible[visible_row]
 
+    def visible_row(self, record_index: int) -> int | None:
+        if not 0 <= record_index < len(self.records):
+            return None
+        if self._visible is None:
+            return record_index
+        row = bisect_left(self._visible, record_index)
+        return row if row < len(self._visible) and self._visible[row] == record_index else None
+
     def begin_filter(self, enabled: bool) -> None:
         self.beginResetModel()
         self._visible = [] if enabled else None
