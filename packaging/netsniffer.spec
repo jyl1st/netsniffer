@@ -1,31 +1,46 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
 from pathlib import Path
 
 
 project = Path(SPECPATH).parent
 
-# scapy.layers.all 的内置 hook 收集 Scapy 动态载入的协议层。显式保留 Windows 抓包入口。
-analysis = Analysis(
-    [str(project / "main.py")],
-    pathex=[str(project)],
-    hiddenimports=["scapy.arch.libpcap", "scapy.arch.windows", "scapy.libs.winpcapy"],
-    excludes=[
-        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
-        "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput", "PySide6.Qt3DLogic",
-        "PySide6.Qt3DExtras", "PySide6.Qt3DAnimation",
-        "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQuickControls2",
-        "pytest", "_pytest", "tkinter",
-    ],
-)
+# 构建时只从 Windows 和当前 Python 环境寻找 DLL，避免把其他工具的同名 DLL 打进包。
+windows = Path(os.environ["SystemRoot"])
+environment = Path(sys.prefix)
+original_path = os.environ.get("PATH", "")
+os.environ["PATH"] = os.pathsep.join(map(str, (
+    windows / "System32", windows, environment, environment / "DLLs",
+    environment / "Library" / "bin", environment / "Scripts",
+)))
+try:
+    # scapy.layers.all 的内置 hook 收集动态协议层。显式保留 Windows 抓包入口。
+    analysis = Analysis(
+        [str(project / "main.py")],
+        pathex=[str(project)],
+        hiddenimports=["scapy.arch.libpcap", "scapy.arch.windows", "scapy.libs.winpcapy"],
+        excludes=[
+            "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+            "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput", "PySide6.Qt3DLogic",
+            "PySide6.Qt3DExtras", "PySide6.Qt3DAnimation",
+            "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQuickControls2",
+            "pytest", "_pytest", "tkinter",
+        ],
+    )
+finally:
+    os.environ["PATH"] = original_path
 
 # Scapy 运行时从系统安装目录载入 Npcap，构建机的 DLL、驱动和工具不得随包分发。
 npcap_names = {"wpcap.dll", "packet.dll", "npcap.dll", "npcap.sys", "npf.sys", "npcaphelper.exe", "wlanhelper.exe"}
+# Qt 使用 Windows 自带的 ICU 入口，其他工具的同名 DLL 可能只导出带版本后缀的符号。
+windows_icu_names = {"icu.dll", "icuin.dll", "icuuc.dll"}
 
 
 def include_entry(entry):
     for path in entry[:2]:
         name = Path(path).name.casefold()
-        if name in npcap_names:
+        if name in npcap_names or name in windows_icu_names:
             return False
         # QtGui hook 会收集虚拟键盘插件，它会额外链接 QtQuick 和 QtQml。
         if name == "qtvirtualkeyboardplugin.dll" or name.startswith(("qt6virtualkeyboard", "qt6quick", "qt6qml")):
