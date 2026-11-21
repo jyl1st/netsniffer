@@ -108,12 +108,13 @@ def dissect_application(
         return _unconfirmed(span, registry, transport, identified)
     name, basis = identified.protocol, identified.basis
     key = "dns_tcp" if name == "DNS" and transport == 6 else name.casefold()
+    details = registry.dispatch("app", key, span)
     fields = [
         span.field("app", "应用协议", name, 0, 0),
         span.field("app.basis", "识别依据", basis, 0, 0),
-        registry.dispatch("app", key, span),
+        details,
     ]
-    return span.layer("application", f"应用识别 · {name}（{basis}）", fields)
+    return span.layer("application", f"应用识别 · {name}（{basis}）", fields, filterable=details.filterable)
 
 
 def _unconfirmed(span: Span, registry: Registry, transport: int, result: Application) -> Field:

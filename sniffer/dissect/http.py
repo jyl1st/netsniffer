@@ -49,13 +49,13 @@ def _parse_text_headers(span: Span, prefix: str) -> Field:
         raise ParseError(f"不是有效的 {title} 首行")
     match, response, first_end, terminated = matched
     first_line = span.raw[span.start:first_end].decode("latin-1", "replace")
+    title = f"{title} · {first_line}"
     if response:
         fields = _line_fields(span, match, prefix, ("version", "response.code", "response.phrase"), ("版本", "状态码", "原因"))
     else:
         fields = _line_fields(span, match, prefix, ("request.method", "request.uri", "version"), ("方法", "目标", "版本"))
     if not terminated:
-        fields.append(_missing_headers(span, prefix, len(span)))
-        return span.layer(prefix, f"{title} · {first_line}", fields)
+        return _incomplete_headers(span, prefix, title, fields, len(span))
     cursor = first_end + 2
     for _ in range(MAX_HEADERS):
         line_end = span.raw.find(b"\r\n", cursor, end)
@@ -68,11 +68,18 @@ def _parse_text_headers(span: Span, prefix: str) -> Field:
             cursor += 2
             if cursor < span.end:
                 fields.append(span.payload(cursor - span.start, f"{prefix}.body", "消息体"))
-            return span.layer(prefix, f"{title} · {first_line}", fields)
+            return span.layer(prefix, title, fields)
         fields.append(_header(span.sub(cursor - span.start, line_end - cursor), prefix))
         cursor = line_end + 2
-    fields.append(_missing_headers(span, prefix, cursor - span.start))
-    return span.layer(prefix, f"{title} · {first_line}", fields)
+    return _incomplete_headers(span, prefix, title, fields, cursor - span.start)
+
+
+def _incomplete_headers(span: Span, prefix: str, title: str, fields: list[Field], offset: int) -> Field:
+    fields.append(_missing_headers(span, prefix, offset))
+    layer = span.layer(prefix, title, fields)
+    if prefix == "http" and span.raw.find(b"\r\n\r\n", span.start, span.end) < 0:
+        return layer.as_incomplete()
+    return layer
 
 
 def _missing_headers(span: Span, prefix: str, offset: int) -> Field:

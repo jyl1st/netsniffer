@@ -85,7 +85,9 @@ def test_http_recovers_complete_requests_after_a_missing_segment(tmp_path):
         _segment(80, second_start, second),
         _segment(80, second_start + len(second), third),
     ])
-    assert _matching_frames(frames, "http.host") == [1, 2, 3]
+    assert _matching_frames(frames, "http.host") == [2, 3]
+    partial_host = _fields(frames[1])["http.host"]
+    assert frames[1].raw[partial_host.offset:partial_host.end] == b"on"
     for frame, hostname in zip(frames[2:], (b"two.example", b"three.example")):
         host = _fields(frame)["http.host"]
         assert host.value == hostname.decode("ascii")
@@ -125,6 +127,61 @@ def test_tls_recovers_complete_alert_after_a_missing_segment(tmp_path):
     assert _matching_frames(frames, "tls.record.content_type == 21") == [2]
     content_type = _fields(frames[2])["tls.record.content_type"]
     assert frames[2].raw[content_type.offset:content_type.end] == b"\x15"
+
+
+def test_tls_partial_client_hello_filters_only_on_the_completion_frame(tmp_path):
+    data = _client_hello()
+    frames = _import(tmp_path, [
+        _segment(443, 1000, flags="S"),
+        _segment(443, 1001, data[:1000]),
+        _segment(443, 2001, data[1000:]),
+    ])
+    for expression in ("tls", 'app == "TLS"', "tls.handshake.type == 1"):
+        assert _matching_frames(frames, expression) == [2]
+    handshake = _fields(frames[1])["tls.handshake.type"]
+    assert frames[1].raw[handshake.offset:handshake.end] == b"\x01"
+    assert dissect_frame(frames[1]).at_byte(handshake.offset) == handshake
+    assert _fields(frames[2])["tls.handshake.type"].length == 0
+
+
+def test_http_partial_post_filters_only_on_the_completion_frame(tmp_path):
+    first = b"POST /one HTTP/1.1\r\nHost: split."
+    last = b"example\r\nContent-Length: 0\r\n\r\n"
+    frames = _import(tmp_path, [
+        _segment(80, 1001, first),
+        _segment(80, 1001 + len(first), last),
+    ])
+    for expression in ("http", 'app == "HTTP"', 'http.request.method == "POST"', "http.host"):
+        assert _matching_frames(frames, expression) == [1]
+    host = _fields(frames[0])["http.host"]
+    assert frames[0].raw[host.offset:host.end] == b"split."
+    assert dissect_frame(frames[0]).at_byte(host.offset) == host
+    assert _fields(frames[1])["http.host"].value == "split.example"
+
+
+def test_tls_filters_a_complete_record_before_a_partial_record(tmp_path):
+    alert = b"\x15\x03\x03\x00\x02\x02\x28"
+    data = _client_hello()
+    frames = _import(tmp_path, [
+        _segment(443, 1001, alert + data[:1000]),
+        _segment(443, 1001 + len(alert) + 1000, data[1000:]),
+    ])
+    assert _matching_frames(frames, "tls.record.content_type == 21") == [0]
+    assert _matching_frames(frames, "tls.record.content_type == 22") == [1]
+    assert _matching_frames(frames, "tls.handshake.type == 1") == [1]
+
+
+def test_tls_flow_label_does_not_make_an_incomplete_record_match(tmp_path):
+    alert = b"\x15\x03\x03\x00\x02\x02\x28"
+    data = _client_hello()
+    start = 1001 + len(alert)
+    frames = _import(tmp_path, [
+        _segment(443, 1001, alert),
+        _segment(443, start, data[:3]),
+        _segment(443, start + 3, data[3:]),
+    ])
+    assert frames[1].protocol == "TLS"
+    assert _matching_frames(frames, "tls") == [0, 2]
 
 
 def test_file_reassembles_tls_after_gap_and_keeps_first_segment_offsets(tmp_path):
@@ -192,6 +249,7 @@ def test_file_reassembles_dns_tcp_length_and_response(tmp_path):
     assert _fields(frames[2])["dns.qry.name"].length > 0
     assert _fields(frames[3])["dns.a"].value == "192.0.2.5"
     assert _fields(frames[3])["dns.a"].length == 0
+    assert _matching_frames(frames, "dns.qry.name") == [1, 3]
 
 
 def test_live_queue_reassembles_tls_record_header_split_across_packets():

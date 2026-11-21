@@ -130,7 +130,7 @@ def parse_dns_tcp(span: Span, _registry, _network) -> Field:
     cursor = 0
     while cursor < len(span) and len(records) < 16:
         if len(span) - cursor < 2:
-            records.append(span.missing("dns.tcp.incomplete", 2 - (len(span) - cursor), tcp_segment=True))
+            records.append(span.missing("dns.tcp.incomplete", 2 - (len(span) - cursor), tcp_segment=True).as_incomplete())
             break
         size = span.uint(cursor, 2)
         block = span.sub(cursor, min(size + 2, len(span) - cursor))
@@ -138,11 +138,13 @@ def parse_dns_tcp(span: Span, _registry, _network) -> Field:
             block.number("dns.tcp.length", "消息长度", 0, 2),
             _parse_message(block.sub(2), mdns=False),
         ]
-        if len(block) < size + 2:
+        incomplete = len(block) < size + 2
+        if incomplete:
             parts.append(block.missing("dns.tcp.incomplete", size + 2 - len(block), tcp_segment=True))
-        records.append(block.layer("dns.tcp.message", "TCP DNS 消息", parts))
+        layer = block.layer("dns.tcp.message", "TCP DNS 消息", parts)
+        records.append(layer.as_incomplete() if incomplete else layer)
         cursor += len(block)
-    return span.layer("dns.tcp", "TCP DNS", records)
+    return span.layer("dns.tcp", "TCP DNS", records, filterable=any(record.filterable for record in records))
 
 
 def _parse_message(span: Span, *, mdns: bool) -> Field:

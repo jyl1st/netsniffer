@@ -99,7 +99,10 @@ def _tcp_application(application: TcpApplication, registry: Registry) -> Field:
             fields.append(_generated(tree))
         return Field("tcp.reassembled", f"TCP 重组 · {application.protocol}", None, 0, 0, tuple(fields))
     fields.append(Field(protocol, application.protocol, None, 0, 0))
-    return Field("application", f"应用识别 · {application.protocol}（{basis}）", None, 0, 0, tuple(fields))
+    return Field(
+        "application", f"应用识别 · {application.protocol}（{basis}）", None, 0, 0, tuple(fields),
+        filterable=protocol not in ("dns", "http", "tls"),
+    )
 
 
 def _generated(field: Field) -> Field:

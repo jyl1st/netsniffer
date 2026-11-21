@@ -199,10 +199,10 @@ class MainWindow(QMainWindow):
         field = item.data(0, Qt.ItemDataRole.UserRole)
         if field is None:
             return
-        ancestor = item.parent()
+        ancestor = item
         while ancestor is not None:
             parent_field = ancestor.data(0, Qt.ItemDataRole.UserRole)
-            if parent_field is not None and parent_field.name == "app.port_hint":
+            if parent_field is not None and (not parent_field.filterable or parent_field.name == "app.port_hint"):
                 return
             ancestor = ancestor.parent()
         view.setCurrentItem(item)

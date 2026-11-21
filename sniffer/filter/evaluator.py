@@ -22,10 +22,14 @@ class FilterProgram:
         pending = [tree]
         while pending:
             node = pending.pop()
-            if node.name in self.required:
-                values.setdefault(node.name, []).append(node.value)
-            if node.name != "app.port_hint":
-                pending.extend(node.children)
+            if not node.filterable:
+                continue
+            name = node.name
+            if name in self.required:
+                values.setdefault(name, []).append(node.value)
+            children = node.children
+            if children and name != "app.port_hint":
+                pending.extend(children)
         return _evaluate(self.expression, values)
 
 

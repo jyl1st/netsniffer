@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from ipaddress import ip_address
 from struct import calcsize, unpack_from
@@ -22,10 +22,14 @@ class Field:
     offset: int
     length: int
     children: tuple["Field", ...] = ()
+    filterable: bool = True
 
     @property
     def end(self) -> int:
         return self.offset + self.length
+
+    def as_incomplete(self) -> "Field":
+        return replace(self, show=f"{self.show}（不完整，仅供查看）", filterable=False)
 
     def walk(self) -> Iterator["Field"]:
         yield self
@@ -101,8 +105,9 @@ class Span:
 
     def layer(
         self, name: str, label: str, children: list[Field] | tuple[Field, ...], value: FieldValue = None,
+        *, filterable: bool = True,
     ) -> Field:
-        return Field(name, label, value, self.start, len(self), tuple(children))
+        return Field(name, label, value, self.start, len(self), tuple(children), filterable)
 
     def payload(self, offset: int = 0, name: str = "data", label: str = "数据") -> Field:
         return self.field(name, f"{label}（{len(self) - offset} 字节）", None, offset, len(self) - offset)

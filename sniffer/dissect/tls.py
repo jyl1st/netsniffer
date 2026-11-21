@@ -73,6 +73,7 @@ def _first_sni(span: Span) -> str | None:
 def parse_tls(span: Span, _registry, _network) -> Field:
     fields = []
     cursor = 0
+    has_record = False
     for _ in range(32):
         if cursor >= len(span):
             break
@@ -100,11 +101,14 @@ def parse_tls(span: Span, _registry, _network) -> Field:
             context = "记录抓包截断" if record.capture_truncated else "记录跨 TCP 段"
             title += f" · {context}：本段含 {len(record) - 5} / {declared_length} 字节"
             parts.append(record.missing("tls.record.truncated", declared_length + 5 - len(record), tcp_segment=True))
-        fields.append(record.layer("tls.record", title, parts))
+        else:
+            has_record = True
+        layer = record.layer("tls.record", title, parts)
+        fields.append(layer.as_incomplete() if incomplete else layer)
         cursor += len(record)
     if not fields:
         raise ParseError("没有 TLS 记录")
-    return span.layer("tls", "TLS", fields)
+    return span.layer("tls", "TLS", fields, filterable=has_record)
 
 
 def parse_tls_handshake(span: Span, _registry, _network) -> Field:
@@ -141,7 +145,8 @@ def _handshakes(span: Span, *, record_incomplete: bool) -> list[Field]:
                 "tls.handshake.incomplete", f"握手其余 {size + 4 - len(message)} 字节跨 TLS 记录",
                 None, len(message), 0,
             ))
-        fields.append(message.layer("tls.handshake", title, details))
+        layer = message.layer("tls.handshake", title, details)
+        fields.append(layer.as_incomplete() if incomplete and not record_incomplete else layer)
         cursor += len(message)
     return fields
 
