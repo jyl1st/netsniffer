@@ -87,3 +87,7 @@ TLS 记录的声明长度可以大于单个 TCP 段的负载。按已捕获边�
 TLS 重组 TCP 上的记录，并拼接连续明文握手记录中的 ClientHello 或 ServerHello。DNS 按两字节长度前缀处理。HTTP/1.x 重组头部，并按 Content-Length 越过消息体继续识别下一条头部。遇到分块传输、以连接关闭标记结尾的消息体或协议升级时，该方向停止查找后续 HTTP 头部。协议依据见 [TCP 序号](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.4)、[TLS 记录](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.1) 和 [HTTP 消息体长度](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3)。
 
 合成样例 `samples/tcp_reassembly.pcap` 可用 `python -m tools.compare_tshark --stage 4` 对照 SNI、HTTP Host 与 DNS 查询名的值和完成帧，分别在第 5、10、15 帧与 TShark 一致。接入 TCP 重组后复测一轮 50,000 帧显示过滤，三条表达式的命中序号均正确，耗时为 7.63–8.19 秒，Qt 心跳最长间隔为 124.4 ms。
+
+已识别的连接遇到序号缺口时，只用与连接协议一致且在单帧内通过内容校验的完整消息重新定位。以新帧起点为边界，放弃边界之前的残片，清除该方向的 HTTP 消息体计数和待拼接的 TLS 握手，保留边界以后的缓存和帧内字段。这样即便缺口后来才补齐，也优先保住后续已经可读的消息。
+
+HTTP 消息体长度失步使用相同的重新定位逻辑。完整的响应头可提供新边界，完整的请求头越过旧消息体末尾时也可提供新边界。完全落在已知消息体内的请求首部继续按消息体处理，避免把正好出现在体内的 HTTP 文本当成请求。此处根据当前帧内容恢复，无需跨方向维护 HEAD 请求队列。

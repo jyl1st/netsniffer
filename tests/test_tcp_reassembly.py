@@ -64,9 +64,67 @@ def _fields(record):
     return {node.name: node for node in dissect_frame(record).walk()}
 
 
+def _matching_frames(frames, expression):
+    program = compile_filter(expression)
+    return [index for index, frame in enumerate(frames) if program.matches(dissect_frame(frame))]
+
+
 def _client_hello():
     # 将 SNI 放在较长的扩展之后，确保主机名落在后续 TCP 段。
     return tls_client_hello(b"split.example", leading_extensions=pack("!HH", 21, 1250) + bytes(1250))
+
+
+def test_http_recovers_complete_requests_after_a_missing_segment(tmp_path):
+    first = b"GET /1 HTTP/1.1\r\nHost: on"
+    second = b"GET /2 HTTP/1.1\r\nHost: two.example\r\n\r\n"
+    third = b"GET /3 HTTP/1.1\r\nHost: three.example\r\n\r\n"
+    second_start = 1001 + len(first) + len(b"e.example\r\n\r\n")
+    frames = _import(tmp_path, [
+        _segment(80, 1000, flags="S"),
+        _segment(80, 1001, first),
+        _segment(80, second_start, second),
+        _segment(80, second_start + len(second), third),
+    ])
+    assert _matching_frames(frames, "http.host") == [1, 2, 3]
+    for frame, hostname in zip(frames[2:], (b"two.example", b"three.example")):
+        host = _fields(frame)["http.host"]
+        assert host.value == hostname.decode("ascii")
+        assert frame.raw[host.offset:host.end] == hostname
+        assert frame.info == frame.summary.info
+
+
+def test_http_recovers_response_after_head_content_length(tmp_path):
+    head = b"HEAD / HTTP/1.1\r\nHost: a\r\n\r\n"
+    head_response = b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n"
+    not_found = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+    next_response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+    response_start = 2001 + len(head_response)
+    frames = _import(tmp_path, [
+        _segment(80, 1001, head),
+        _segment(80, 2001, head_response, reply=True),
+        _segment(80, 1001 + len(head), b"GET /next HTTP/1.1\r\nHost: a\r\n\r\n"),
+        _segment(80, response_start, not_found, reply=True),
+        _segment(80, response_start + len(not_found), next_response[:8], reply=True),
+        _segment(80, response_start + len(not_found) + 8, next_response[8:], reply=True),
+    ])
+    assert _matching_frames(frames, "http.response.code == 404") == [3]
+    code = _fields(frames[3])["http.response.code"]
+    assert frames[3].raw[code.offset:code.end] == b"404"
+    assert _fields(frames[5])["http.response.code"].value == 200
+    assert "tcp.reassembled" in _fields(frames[5])
+
+
+def test_tls_recovers_complete_alert_after_a_missing_segment(tmp_path):
+    data = _client_hello()
+    alert = b"\x15\x03\x03\x00\x02\x02\x28"
+    frames = _import(tmp_path, [
+        _segment(443, 1000, flags="S"),
+        _segment(443, 1001, data[:1000]),
+        _segment(443, 1001 + len(data), alert),
+    ])
+    assert _matching_frames(frames, "tls.record.content_type == 21") == [2]
+    content_type = _fields(frames[2])["tls.record.content_type"]
+    assert frames[2].raw[content_type.offset:content_type.end] == b"\x15"
 
 
 def test_file_reassembles_tls_after_gap_and_keeps_first_segment_offsets(tmp_path):

@@ -60,7 +60,7 @@ class TcpApplicationTracker:
             direction = connection.directions[flow.source] = _Direction()
         payload = record.raw[segment.start:segment.end]
         buffer = direction.buffer
-        start = buffer.add(segment.sequence, payload if not direction.opaque else b"", syn=syn)
+        start = _add_segment(direction, connection.protocol, record.summary.protocol, segment, payload, syn=syn)
         if not direction.opaque:
             _recognize(connection, buffer, flow, start, payload)
         keep_local = start in direction.message_starts or (
@@ -115,6 +115,41 @@ class TcpApplicationTracker:
 
 def _identify(payload: bytes, flow: TransportFlow) -> Application | None:
     return identify_application(payload, 0, len(payload), 6, flow.source[1], flow.destination[1])
+
+
+def _add_segment(
+    direction: _Direction, protocol: str | None, local_protocol: str, segment: TcpSegment, payload: bytes, *, syn: bool,
+) -> int:
+    buffer = direction.buffer
+    if direction.opaque:
+        return buffer.add(segment.sequence, b"", syn=syn)
+    if not buffer.anchored or protocol != local_protocol or protocol not in ("DNS", "HTTP", "TLS"):
+        return buffer.add(segment.sequence, payload, syn=syn)
+
+    position = buffer.position
+    assert position is not None
+    ready = buffer.contiguous()
+    contiguous_end = position + (len(ready) if ready is not None else 0)
+    start = buffer.add(segment.sequence, payload, syn=syn)
+    if start < position:
+        return start
+
+    gap = start > contiguous_end
+    if not gap and not direction.http_body_remaining:
+        return start
+    length = _message_size(protocol, payload)
+    if length is None or length > len(payload):
+        return start
+    if (not gap and not payload.startswith(b"HTTP/")
+            and start + length <= position + direction.http_body_remaining):
+        return start
+
+    # 只用完整且已识别的帧恢复边界。若旧窗口裁掉了当前帧，推进后重新插入。
+    buffer.advance(start - position)
+    buffer.add(segment.sequence, payload, syn=syn)
+    direction.http_body_remaining = 0
+    direction.tls_hello.clear()
+    return start
 
 
 def _recognize(
@@ -215,7 +250,7 @@ def _tls_hello(direction: _Direction, record: bytes) -> bytes | None:
     return hello
 
 
-def _message_size(protocol: str, data: bytearray) -> int | None:
+def _message_size(protocol: str, data: bytes | bytearray) -> int | None:
     if protocol == "TLS":
         header = tls_record_header(data, 0, len(data))
         return 5 + header[2] if header is not None else None
