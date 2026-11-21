@@ -54,7 +54,7 @@ tcp tcp.ack tcp.checksum tcp.checksum.valid tcp.dstport tcp.flags tcp.flags.ack 
 tcp.flags.ece tcp.flags.fin tcp.flags.psh tcp.flags.rst tcp.flags.syn tcp.flags.urg tcp.hdr_len
 tcp.incomplete tcp.len tcp.option tcp.option.incomplete tcp.option.kind tcp.option.length tcp.options
 tcp.options.incomplete tcp.options.mss_val tcp.options.sack_le tcp.options.sack_re
-tcp.options.timestamp.tsecr tcp.options.timestamp.tsval tcp.options.wscale.shift tcp.payload tcp.seq
+tcp.options.timestamp.tsecr tcp.options.timestamp.tsval tcp.options.wscale.shift tcp.payload tcp.reassembled tcp.seq
 tcp.srcport tcp.stream tcp.urgent_pointer tcp.window_size
 tls tls.handshake tls.handshake.ciphersuite tls.handshake.ciphersuites tls.handshake.comp_method
 tls.handshake.compression_methods tls.handshake.extension tls.handshake.extension.incomplete

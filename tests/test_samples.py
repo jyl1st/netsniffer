@@ -18,6 +18,7 @@ def test_samples_are_reproducible_and_readable(tmp_path):
         "arp": 2,
         "ipv6": 2,
         "tcp_retransmission": 7,
+        "tcp_reassembly": 15,
         "arp_conflict": 3,
         "syn_scan": 16,
     }

@@ -28,13 +28,16 @@ def tls_info(raw: bytes, start: int, end: int, kind: int, record_length: int) ->
     record_end = min(end, start + 5 + record_length)
     if kind != 22 or start + 5 >= record_end:
         return RECORD_TYPES[kind]
-    handshake_type = raw[start + 5]
+    return tls_handshake_info(Span(raw, start + 5, record_end))
+
+
+def tls_handshake_info(data: Span) -> str:
+    handshake_type = data.uint(0)
     if handshake_type == 2:
         return "Server Hello"
     if handshake_type != 1:
         return HANDSHAKE_TYPES.get(handshake_type, "Handshake")
     try:
-        data = Span(raw, start + 5, record_end)
         handshake_end = min(len(data), 4 + data.uint(1, 3))
         name = _first_sni(data.sub(4, handshake_end - 4))
     except ParseError:
@@ -102,6 +105,10 @@ def parse_tls(span: Span, _registry, _network) -> Field:
     if not fields:
         raise ParseError("没有 TLS 记录")
     return span.layer("tls", "TLS", fields)
+
+
+def parse_tls_handshake(span: Span, _registry, _network) -> Field:
+    return span.layer("tls", "TLS · 重组握手", _handshakes(span, record_incomplete=False))
 
 
 def _version(span: Span, name: str, offset: int) -> Field:

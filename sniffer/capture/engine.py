@@ -8,6 +8,7 @@ from scapy.all import conf
 from scapy.error import Scapy_Exception
 from scapy.utils import decode_locale_str
 
+from sniffer.analysis.tcp_application import TcpApplicationTracker
 from sniffer.capture.bpf import install_capture_filter
 from sniffer.model.packet import PacketRecord
 
@@ -33,6 +34,7 @@ class CaptureSession:
         self._driver_drops = 0
         self.error: str | None = None
         self._queue: Queue[PacketRecord] = Queue(maxsize=4096)
+        self._tcp_applications = TcpApplicationTracker()
 
     def start(self) -> None:
         Thread(target=self._run, name="NetSniffer capture", daemon=True).start()
@@ -62,7 +64,7 @@ class CaptureSession:
             timestamp = Decimal(header.ts.tv_sec) + Decimal(header.ts.tv_usec).scaleb(-6)
             record = PacketRecord.from_bytes(timestamp, raw, linktype, header.len)
             try:
-                self._queue.put_nowait(record)
+                self._queue.put_nowait(self._tcp_applications.process(record))
             except Full:
                 discarded = True
         with self._lock:

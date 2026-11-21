@@ -4,6 +4,7 @@ from ipaddress import ip_address
 from struct import unpack_from
 
 from sniffer.analysis.streams import StreamIndex, TransportFlow
+from sniffer.analysis.tcp import TcpApplication, TcpSegment
 from sniffer.dissect.app_detect import identify_application
 from sniffer.dissect.checksum import checksum_valid, transport_checksum
 from sniffer.dissect.ethernet import VLAN_TYPES
@@ -31,6 +32,7 @@ class PacketSummary:
     info: str = ""
     error: bool = False
     flow: TransportFlow | None = None
+    tcp: TcpSegment | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +44,15 @@ class PacketRecord:
     summary: PacketSummary
     # 编号由帧入库时的抓包顺序决定，不属于帧本身。
     stream_id: int | None = field(default=None, compare=False)
+    tcp_application: TcpApplication | None = field(default=None, compare=False)
+
+    @property
+    def protocol(self) -> str:
+        return self.tcp_application.protocol if self.tcp_application else self.summary.protocol
+
+    @property
+    def info(self) -> str:
+        return self.tcp_application.info if self.tcp_application else self.summary.info
 
     @classmethod
     def from_bytes(
@@ -171,6 +182,7 @@ def _transport(
                 end = min(end, offset + udp_length)
                 if udp_length <= size and (udp_checksum or network.version == 6):
                     checksum_end = end
+        transport_info = info
         application = identify_application(raw, payload_start, end, protocol, source_port, destination_port)
         if application:
             if application.protocol:
@@ -180,17 +192,23 @@ def _transport(
                 info += f" · {application.info}"
         if keepalive:
             info = f"TCP Keep-Alive? · {info}"
+            transport_info = f"TCP Keep-Alive? · {transport_info}"
         if checksum_end is not None and network.complete:
             bad_checksum |= transport_checksum(Span(raw, offset, checksum_end), network, protocol) is False
         if bad_checksum:
             info += " · 校验和异常"
+            transport_info += " · 校验和异常"
         flow = None
         if has_base_header:
             flow = TransportFlow(
                 "tcp" if protocol == 6 else "udp",
                 (network.source, source_port), (network.destination, destination_port),
             )
-        return PacketSummary(source, destination, name, info, reset or bad_checksum, flow)
+        tcp = None
+        if protocol == 6 and checksum_end is not None:
+            sequence, = unpack_from("!I", raw, offset + 4)
+            tcp = TcpSegment(sequence, value, payload_start, end, transport_info)
+        return PacketSummary(source, destination, name, info, reset or bad_checksum, flow, tcp)
     if protocol in (1, 58) and size >= 2:
         if size >= 4 and network.complete:
             if protocol == 1:

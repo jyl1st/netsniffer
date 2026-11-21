@@ -5,7 +5,7 @@ from sniffer.dissect.field import Field
 
 PROTOCOL_LAYERS = frozenset({
     "eth", "vlan", "null", "arp", "ip", "ipv6", "icmp", "icmpv6", "tcp", "udp",
-    "application", "dns", "dns.tcp", "mdns", "http", "tls", "dhcp", "ssdp", "ntp", "ssh", "quic",
+    "application", "tcp.reassembled", "dns", "dns.tcp", "mdns", "http", "tls", "dhcp", "ssdp", "ntp", "ssh", "quic",
 })
 
 

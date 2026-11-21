@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
                         name = f"arp.{direction}.proto_ipv4"
                 value = text
         elif column == 4:
-            protocol = {"IPv4": "ip", "Ethernet": "eth"}.get(summary.protocol, summary.protocol.casefold())
+            protocol = {"IPv4": "ip", "Ethernet": "eth"}.get(record.protocol, record.protocol.casefold())
             if known_field(protocol):
                 name, value = protocol, None
         elif column == 5:

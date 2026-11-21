@@ -98,7 +98,7 @@ def dns_packets() -> list[Packet]:
     ]
 
 
-def tls_packets(hostname: bytes = HOSTNAME) -> list[Packet]:
+def tls_client_hello(hostname: bytes = HOSTNAME, *, leading_extensions: bytes = b"") -> bytes:
     # 明文 ClientHello 只需构造记录与握手头。SNI 的列表、扩展和扩展块各有长度字段。
     server_name = b"\x00" + len(hostname).to_bytes(2, "big") + hostname
     server_names = len(server_name).to_bytes(2, "big") + server_name
@@ -107,14 +107,18 @@ def tls_packets(hostname: bytes = HOSTNAME) -> list[Packet]:
     empty_session = b"\x00"
     cipher_suites = b"\x00\x02\x00\x2f"
     compression = b"\x01\x00"
-    extensions = len(sni).to_bytes(2, "big") + sni
+    extension_data = leading_extensions + sni
+    extensions = len(extension_data).to_bytes(2, "big") + extension_data
     version = b"\x03\x03"
     hello = version + random + empty_session + cipher_suites + compression + extensions
     handshake = b"\x01" + len(hello).to_bytes(3, "big") + hello
-    record = b"\x16" + version + len(handshake).to_bytes(2, "big") + handshake
+    return b"\x16" + version + len(handshake).to_bytes(2, "big") + handshake
+
+
+def tls_packets(hostname: bytes = HOSTNAME) -> list[Packet]:
     return [
         *tcp_handshake(443),
-        tcp_segment(443, "PA", 1001, 2001) / record,
+        tcp_segment(443, "PA", 1001, 2001) / tls_client_hello(hostname),
     ]
 
 
@@ -177,6 +181,21 @@ def display_filter_packets() -> list[Packet]:
     return [http, query, response, syn, syn_ack, selected, other]
 
 
+def tcp_reassembly_packets() -> list[Packet]:
+    # 让 SNI 和 HTTP Host 落在段边界之后，再切开 DNS 的长度前缀。
+    padding = pack("!HH", 21, 1250) + bytes(1250)
+    tls = tls_client_hello(b"split.example", leading_extensions=padding)
+    dns = bytes(DNS(id=1, rd=1, qd=DNSQR(qname=HOSTNAME, qtype="A")))
+    packets = []
+    for port, message, split in (
+        (443, tls, 1200), (8080, HTTP_REQUEST, 30), (53, pack("!H", len(dns)) + dns, 1),
+    ):
+        packets.extend(tcp_handshake(port))
+        packets.append(tcp_segment(port, "PA", 1001, 2001) / message[:split])
+        packets.append(tcp_segment(port, "PA", 1001 + split, 2001) / message[split:])
+    return packets
+
+
 def make_samples(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     arp_conflict = Ether(src=OTHER_MAC, dst=BROADCAST_MAC) / ARP(
@@ -202,6 +221,7 @@ def make_samples(output_dir: Path) -> None:
             / ICMPv6EchoReply(id=1, seq=1, data=b"echo"),
         ],
         "tcp_retransmission": http_packets(retransmit=True),
+        "tcp_reassembly": tcp_reassembly_packets(),
         "arp_conflict": [*arp_packets(), arp_conflict],
         "syn_scan": [tcp_segment(port, "S", 1000) for port in range(10000, 10016)],
     }

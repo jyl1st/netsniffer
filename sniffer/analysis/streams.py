@@ -11,6 +11,13 @@ class TransportFlow:
     source: Endpoint
     destination: Endpoint
 
+    @property
+    def endpoints(self) -> tuple[Endpoint, Endpoint]:
+        # 地址和端口成对排序，使回包复用同一索引键。
+        if self.source > self.destination:
+            return self.destination, self.source
+        return self.source, self.destination
+
 
 class StreamIndex:
     """按入库顺序为一次抓包分配 TCP 和 UDP 流编号。"""
@@ -21,9 +28,5 @@ class StreamIndex:
         }
 
     def number(self, flow: TransportFlow) -> int:
-        # 地址和端口成对排序，使回包复用同一编号。
-        first, second = flow.source, flow.destination
-        if first > second:
-            first, second = second, first
         numbers = self._numbers[flow.protocol]
-        return numbers.setdefault((first, second), len(numbers))
+        return numbers.setdefault(flow.endpoints, len(numbers))

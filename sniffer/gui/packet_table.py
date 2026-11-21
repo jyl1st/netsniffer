@@ -53,7 +53,7 @@ class PacketTableModel(QAbstractTableModel):
         record = self.records[row]
         summary = record.summary
         if role in (Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole):
-            protocol = COLOR_ALIASES.get(summary.protocol, summary.protocol)
+            protocol = COLOR_ALIASES.get(record.protocol, record.protocol)
             group = "错误包" if summary.error and self.colors.get("错误包") else protocol
             rules = self._foreground if role == Qt.ItemDataRole.ForegroundRole else self._background
             return rules.get(group)
@@ -65,7 +65,7 @@ class PacketTableModel(QAbstractTableModel):
             return self._display_time(row)
         return (
             row + 1, None, summary.source, summary.destination,
-            summary.protocol, record.wire_length, summary.info,
+            record.protocol, record.wire_length, record.info,
         )[index.column()]
 
     def _display_time(self, row: int) -> str:

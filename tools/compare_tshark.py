@@ -78,17 +78,40 @@ def compare_display_filters(executable: str) -> int:
     return differences
 
 
+def compare_tcp_reassembly(executable: str) -> int:
+    sample = SAMPLES / "tcp_reassembly.pcap"
+    trees = tuple(_trees(sample))
+    differences = 0
+    for key, value, packet in (
+        ("tls.handshake.extensions_server_name", "split.example", 5),
+        ("http.host", "sniffer.example", 10),
+        ("dns.qry.name", "sniffer.example", 15),
+    ):
+        expression = f'{key} == "{value}"'
+        program = compile_filter(expression)
+        observed = [
+            f"{index}\t{value}" for index, tree in enumerate(trees, 1) if program.matches(tree)
+        ]
+        external = _tshark_fields(executable, sample, expression, ("frame.number", key))
+        matched = observed == external == [f"{packet}\t{value}"]
+        differences += not matched
+        print(f"{'OK' if matched else 'DIFF'} {expression} -> {observed} | TShark {external}")
+    return differences
+
+
 def main() -> int:
     default = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Wireshark" / "tshark.exe"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tshark", default=shutil.which("tshark") or str(default))
-    parser.add_argument("--stage", choices=("2", "3", "all"), default="all")
+    parser.add_argument("--stage", choices=("2", "3", "4", "all"), default="all")
     args = parser.parse_args()
     differences = 0
     if args.stage in ("2", "all"):
         differences += compare_protocol_fields(args.tshark)
     if args.stage in ("3", "all"):
         differences += compare_display_filters(args.tshark)
+    if args.stage in ("4", "all"):
+        differences += compare_tcp_reassembly(args.tshark)
     print(f"Differences: {differences}")
     return int(differences != 0)
 

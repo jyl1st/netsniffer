@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from scapy.utils import RawPcapNgReader, RawPcapNgWriter, RawPcapReader, RawPcapWriter
 
 from sniffer.analysis.streams import StreamIndex
+from sniffer.analysis.tcp_application import TcpApplicationTracker
 from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
 
 NANOSECONDS = 10**9
@@ -27,6 +28,7 @@ def read_capture(path: Path) -> list[PacketRecord]:
 def read_capture_preview(path: Path) -> CapturePreview:
     records = []
     streams = StreamIndex()
+    tcp_applications = TcpApplicationTracker()
     stored_bytes = 0
     with RawPcapReader(str(path)) as reader:
         is_pcapng = isinstance(reader, RawPcapNgReader)
@@ -49,7 +51,7 @@ def read_capture_preview(path: Path) -> CapturePreview:
                 resolution = NANOSECONDS if reader.nano else 10**6
                 timestamp = Decimal(metadata.sec) + Decimal(metadata.usec) / resolution
             record = PacketRecord.from_bytes(timestamp, data, linktype, metadata.wirelen)
-            records.append(record.with_stream(streams))
+            records.append(tcp_applications.process(record).with_stream(streams))
     return CapturePreview(records, truncated=False, streams=streams)
 
 
