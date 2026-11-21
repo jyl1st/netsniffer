@@ -127,3 +127,13 @@ TCP 重组让跨段字段可用于显示过滤，也引入了两个回归。第�
 新连接的握手和第一个请求可能早于每秒一次的套接字快照。TCP 流任一帧获得归属后，列表按流号将进程匹配回填到已有帧并沿用到后续帧。匹配保留各自的本地端点，回环连接双方的 PID 可同时显示。如果同一本地端点在同一流内出现不同的 PID，列表撤销此前的推断，恢复并保留逐帧匹配。详情树使受影响的缓存失效，引用进程字段的显示过滤从需要重新评估的行继续处理。
 
 本机发出初始 SYN、源端点尚未关联 PID 时，抓包线程会唤醒快照线程，多次请求可合并，刷新之间至少留 100 ms。快照读取前已经关闭的套接字及入站短连接仍可能漏标。如果流的最后一帧也早于可用快照，列表没有可用的匹配来回填。UDP 只保留逐帧匹配。后续可用 ETW 连接事件补充快照采样。 [Windows ETW TCP/IP 事件](https://learn.microsoft.com/en-us/windows/win32/etw/tcpip)
+
+#### WLAN 真实网络验收（2026-11-21）
+
+在 WLAN 网卡上以 `tcp` 为抓包过滤，用 Edge 访问多个 HTTPS 站点及 `http://neverssl.com`。共捕获 9,122 帧，丢弃 0 帧。实时应用 `proc.name == "msedge.exe" && tls.handshake.type == 1` 后显示 81 帧，命中帧均带 `msedge.exe` 标签。截图可见 `ntp.msn.cn`、`cn.bing.com` 等由 TCP 重组取得的 SNI。离线抓包还确认有 `www.bilibili.com`、`www.baidu.com` 和 `www.zhihu.com` 的 ClientHello。 [进程与 SNI 联合过滤截图](images/phase4-wlan-proc-sni.png)
+
+实时进程视图为 `msedge.exe (5112)` 列出 235 条 TCP 流。用 NetSniffer 的导入与显示过滤逻辑重开本地 `real_pcaps/phase4-wlan-proc-sni.pcap`，对照实时截图中的「已关联包数」。流 5 的关联包数和 `tcp.stream == 5` 的帧数均为 511，流 6 的对应计数均为 140。两条流的初始 SYN 分别位于第 6、11 帧。进程标签为实时会话元数据，离线 pcap 复核的是流内总帧数。 [按进程查看 TCP 流截图](images/phase4-wlan-process-streams.png)
+
+NeverSSL 的 TCP 流 291 完整还原了抓到的明文 HTTP 会话。双向 ASCII 视图分色显示 `GET /online`、301 重定向及 HTML 响应。离线按同一追踪逻辑复核得到 4,051 字节，序号无缺口，后续 `GET /online/` 和 200 HTML 响应完整。 [追踪 NeverSSL HTTP 流截图](images/phase4-wlan-follow-http.png)
+
+第 730、880 帧分别在第 729、879 帧的 TLS 1.3 HelloRetryRequest 之后，由客户端在兼容性 CCS 后重发 ClientHello。两帧均正确命中 ClientHello 过滤，帧内也能解析 SNI，Info 却只显示 `Change Cipher Spec`。离线共命中 87 帧 ClientHello，其中 76 帧的 SNI 来自 TCP 重组，10 帧从帧内直接取得 SNI，另外 1 帧未取得可过滤的 SNI。
