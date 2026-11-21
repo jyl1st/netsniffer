@@ -242,3 +242,62 @@ end
 
 register_postdissector(protocol)
 package.loaded.netsniffer_appid = true
+
+if gui_enabled() then
+    local app_value = Field.new("netsniffer.app")
+    local mismatch_value = Field.new("netsniffer.mismatch")
+
+    local function open_statistics()
+        local window = TextWindow.new("NetSniffer 应用识别统计")
+        local listener = Listener.new("frame", "netsniffer")
+        local counts, identified_count, mismatch_count = {}, 0, 0
+
+        function listener.packet()
+            local detected, differs = app_value(), mismatch_value()
+            local different = differs and (differs.value == true or differs.value == 1)
+            if not detected and not different then return end
+            local name = detected and detected.value or "Unconfirmed"
+            local count = counts[name] or {frames = 0, mismatches = 0}
+            counts[name] = count
+            count.frames = count.frames + 1
+            if detected then identified_count = identified_count + 1 end
+            if different then
+                count.mismatches = count.mismatches + 1
+                mismatch_count = mismatch_count + 1
+            end
+        end
+
+        function listener.reset()
+            counts, identified_count, mismatch_count = {}, 0, 0
+        end
+
+        local function draw()
+            local names = {}
+            for name in pairs(counts) do names[#names + 1] = name end
+            table.sort(names)
+            local lines = {
+                string.format("整份抓包 · 已识别 %d 帧 · 端口不符 %d 帧", identified_count, mismatch_count),
+                "",
+                "应用 / App             帧数   不符",
+                "----------------------------------",
+            }
+            for _, name in ipairs(names) do
+                local count = counts[name]
+                lines[#lines + 1] = string.format("%-20s %6d %6d", name, count.frames, count.mismatches)
+            end
+            if #names == 0 then lines[#lines + 1] = "当前抓包暂无识别结果。" end
+            if counts.Unconfirmed then
+                lines[#lines + 1] = "\nUnconfirmed：有负载，但端口猜测未得到确认的帧。"
+            end
+            window:set(table.concat(lines, "\n"))
+        end
+
+        listener.draw = draw
+        window:set_atclose(function() listener:remove() end)
+        -- 加载现有帧，也让 Listener 能接收之后加入捕获的帧。
+        retap_packets()
+        draw()
+    end
+
+    register_menu("NetSniffer 应用识别统计", open_statistics, MENU_TOOLS_UNSORTED)
+end
