@@ -275,7 +275,7 @@ C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.26100.4-0\MpOav.dll
 
 用源码界面驱动 Npcap 实抓本机回环。无过滤时捕获到自发的 UDP，提交无效 BPF 时原会话继续。随后以 `tcp port 443` 重新开始，同时发出测试 UDP 和 TCP 流量。新会话得到 9 帧，状态栏显示实际表达式。用界面导出 PCAPNG，TShark 4.4.5 重读为 9 帧，`!(tcp.port == 443)` 命中 0 帧。
 
-新版 EXE 的 WLAN 实抓截图与 Wireshark 重读截图均为 450 帧，NetSniffer 显示丢弃 0。`capinfos` 确认导出的 `real.pcap` 为纳秒精度 PCAP，TShark 对整份文件执行 `!(tcp.port == 443)` 命中 0 帧。截图拍在停止抓包后，状态栏显示「抓包过滤：无」。验收用的抓包进行中截图和 EXE 导出的 PCAPNG 重读仍待补录。真实抓包文件留在本地测试目录。
+新版 EXE 的 WLAN 实抓共 450 帧，NetSniffer 显示丢弃 0。用 EXE 先后导出 `real.pcap` 和 `real.pcapng`，两份文件均在 Wireshark 4.4.5 中重读为 450 帧，与 NetSniffer 一致。`capinfos` 确认实际文件格式分别为纳秒精度 PCAP 和 PCAPNG。TShark 对两份文件分别执行 `!(tcp.port == 443)`，均命中 0 帧。已提供的 NetSniffer 截图拍在停止后，状态栏显示「抓包过滤：无」。显示实际过滤器的抓包进行中截图待补录。真实抓包文件留在本地测试目录。
 
 ### 阶段 5 统计窗口补齐
 
