@@ -1,6 +1,9 @@
 from scapy.all import ARP, DNS, ICMP, IPv6, TCP, rdpcap
 
 from samples.make_samples import HOSTNAME, HTTP_REQUEST, make_samples
+from sniffer.analysis.expert import ExpertKind, analyze_expert
+from sniffer.analysis.ids import AlertKind, analyze_alerts
+from sniffer.capture.pcap_io import read_capture
 
 
 def test_samples_are_reproducible_and_readable(tmp_path):
@@ -22,6 +25,10 @@ def test_samples_are_reproducible_and_readable(tmp_path):
         "tcp_reassembly": 15,
         "arp_conflict": 3,
         "syn_scan": 16,
+        "syn_scan_responses": 42,
+        "plaintext_credentials": 15,
+        "security_demo": 60,
+        "expert_events": 8,
     }
     assert {path.stem for path in first.glob("*.pcap")} == expected_counts.keys()
 
@@ -72,3 +79,13 @@ def test_samples_are_reproducible_and_readable(tmp_path):
     syns = traces["syn_scan"]
     assert all(str(packet[TCP].flags) == "S" for packet in syns)
     assert len({packet[TCP].dport for packet in syns}) == len(syns)
+
+    alerts = analyze_alerts(read_capture(first / "security_demo.pcap"))
+    assert [item.kind for item in alerts] == [
+        AlertKind.ARP_SPOOFING, AlertKind.SYN_SCAN, *([AlertKind.PLAINTEXT_CREDENTIAL] * 3),
+    ]
+    assert "端口 10003, 10014" in alerts[1].description
+    for alert, masked in zip(alerts[2:], ("b***", "f***", "s***")):
+        assert masked in alert.description and "-example" not in alert.description
+    events = analyze_expert(read_capture(first / "expert_events.pcap"))
+    assert {event.kind for event in events} == set(ExpertKind)

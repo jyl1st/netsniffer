@@ -1,6 +1,7 @@
 """生成供协议分析和告警测试使用的离线以太网 pcap。"""
 
 import argparse
+from base64 import b64encode
 from decimal import Decimal
 from pathlib import Path
 from struct import pack
@@ -147,6 +148,64 @@ def arp_packets() -> list[Packet]:
     ]
 
 
+def arp_conflict_packets() -> list[Packet]:
+    conflict = Ether(src=OTHER_MAC, dst=BROADCAST_MAC) / ARP(
+        op=2, hwsrc=OTHER_MAC, psrc=SERVER_IP, hwdst=BROADCAST_MAC, pdst=SERVER_IP
+    )
+    return [*arp_packets(), conflict]
+
+
+def syn_scan_response_packets() -> list[Packet]:
+    packets = []
+    # 只生成记录在离线文件中的合成帧。地址来自文档保留网段。
+    for port in range(10000, 10020):
+        packets.append(tcp_segment(port, "S", 1000))
+        if port in (10003, 10014):
+            packets.extend([tcp_segment(port, "SA", 2000, 1001, reply=True), tcp_segment(port, "R", 1001)])
+        else:
+            packets.append(tcp_segment(port, "RA", 0, 1001, reply=True))
+    # 在组合样例里，扫描和正常登录使用不同源地址，避免合并其端口统计。
+    scanner = "198.51.100.10"
+    for packet in packets:
+        if packet[IP].src == CLIENT_IP:
+            packet[IP].src = scanner
+        else:
+            packet[IP].dst = scanner
+    return packets
+
+
+def plaintext_credential_packets() -> list[Packet]:
+    token = b64encode(b"demo-http:basic-example")
+    basic = b"GET / HTTP/1.1\r\nHost: sniffer.example\r\nAuthorization: Basic " + token + b"\r\n\r\n"
+    body = b"username=demo&password=form-example"
+    form_header = (b"POST /login HTTP/1.1\r\nHost: sniffer.example\r\n"
+                   b"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: "
+                   + str(len(body)).encode() + b"\r\n\r\n")
+    user, password = b"USER demo-ftp\r\n", b"PASS sample-example\r\n"
+    split = basic.index(token) + 5
+    return [
+        *tcp_handshake(8080),
+        tcp_segment(8080, "PA", 1001, 2001) / basic[:split],
+        tcp_segment(8080, "PA", 1001 + split, 2001) / basic[split:],
+        *tcp_handshake(8081),
+        tcp_segment(8081, "PA", 1001, 2001) / (form_header + body[:24]),
+        tcp_segment(8081, "PA", 1001 + len(form_header) + 24, 2001) / body[24:],
+        *tcp_handshake(21),
+        tcp_segment(21, "PA", 1001, 2001) / user,
+        tcp_segment(21, "PA", 1001 + len(user), 2001) / password,
+    ]
+
+
+def expert_event_packets() -> list[Packet]:
+    request = tcp_segment(8080, "PA", 1001, 2001) / HTTP_REQUEST
+    zero = tcp_segment(8080, "A", 2001, 1001 + len(HTTP_REQUEST), reply=True)
+    zero[TCP].window = 0
+    return [
+        *tcp_handshake(8080), tcp_segment(8080, "A", 1001, 2001),
+        request, request.copy(), zero, tcp_segment(8080, "R", 2001, reply=True),
+    ]
+
+
 def application_packets() -> list[Packet]:
     hostname = "实验设备.local".encode("utf-8")
     dhcp = (
@@ -214,9 +273,6 @@ def tcp_reassembly_packets() -> list[Packet]:
 
 def make_samples(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    arp_conflict = Ether(src=OTHER_MAC, dst=BROADCAST_MAC) / ARP(
-        op=2, hwsrc=OTHER_MAC, psrc=SERVER_IP, hwdst=BROADCAST_MAC, pdst=SERVER_IP
-    )
     traces = {
         "tcp_http": http_packets(),
         "tcp_flow_graph": flow_graph_packets(),
@@ -239,8 +295,12 @@ def make_samples(output_dir: Path) -> None:
         ],
         "tcp_retransmission": http_packets(retransmit=True),
         "tcp_reassembly": tcp_reassembly_packets(),
-        "arp_conflict": [*arp_packets(), arp_conflict],
+        "arp_conflict": arp_conflict_packets(),
         "syn_scan": [tcp_segment(port, "S", 1000) for port in range(10000, 10016)],
+        "syn_scan_responses": syn_scan_response_packets(),
+        "plaintext_credentials": plaintext_credential_packets(),
+        "security_demo": [*arp_conflict_packets(), *syn_scan_response_packets(), *plaintext_credential_packets()],
+        "expert_events": expert_event_packets(),
     }
     for name, packets in traces.items():
         interval = Decimal("0.250") if name == "tcp_retransmission" else Decimal("0.010")
