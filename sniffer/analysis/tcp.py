@@ -12,9 +12,12 @@ MAX_RANGES = 64
 @dataclass(frozen=True, slots=True)
 class TcpSegment:
     sequence: int
+    ack: int
     flags: int
+    window: int
     start: int
     end: int
+    payload_len: int
     transport_info: str
 
 

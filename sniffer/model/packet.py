@@ -215,8 +215,8 @@ def _transport(
             )
         tcp = None
         if protocol == 6 and checksum_end is not None:
-            sequence, = unpack_from("!I", raw, offset + 4)
-            tcp = TcpSegment(sequence, value, payload_start, end, transport_info)
+            sequence, ack, _, window = unpack_from("!IIHH", raw, offset + 4)
+            tcp = TcpSegment(sequence, ack, value, window, payload_start, end, end - payload_start, transport_info)
         udp_payload = (payload_start, end) if protocol == 17 and has_base_header else None
         return PacketSummary(source, destination, name, info, reset or bad_checksum, flow, tcp, udp_payload)
     if protocol in (1, 58) and size >= 2:
