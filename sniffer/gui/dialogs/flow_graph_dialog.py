@@ -70,18 +70,19 @@ class _FlowScene(QGraphicsScene):
         painter.fillRect(QRectF(0, 0, _WIDTH, _HEADER), QColor("#eef3f7"))
         painter.setFont(self._font)
         painter.setPen(_MUTED)
-        painter.drawText(QRectF(16, 11, 120, 20), _LEFT, f"TCP 流 {self.stream_number}")
-        painter.drawText(QRectF(16, 32, 120, 20), _LEFT, "帧号 / 相对时间")
-        painter.drawText(QRectF(838, 11, 120, 20), _LEFT, "连接阶段")
+        painter.drawText(QRectF(16, 23, 120, 18), _LEFT, f"TCP 流 {self.stream_number}")
+        painter.drawText(QRectF(16, 40, 120, 18), _LEFT, "帧号 / 相对时间")
+        painter.drawText(QRectF(846, 36, 120, 18), _LEFT, "连接阶段")
         for x, name, endpoint, owners in zip((_A, _B), "AB", self.graph.endpoints, self.graph.owners):
             painter.setPen(_INK)
             painter.setFont(self._title_font)
-            painter.drawText(QRectF(x - 180, 11, 360, 20), _CENTER, f"{name}  {endpoint_label(endpoint)}")
+            painter.drawText(QRectF(x - 180, 6, 360, 20), _CENTER, f"{name}  {endpoint_label(endpoint)}")
             painter.setPen(_MUTED)
             painter.setFont(self._font)
+            width = 174 if x == _A else 168
             labels = "、".join(owner.label for owner in owners)
-            labels = QFontMetrics(self._font).elidedText(labels, Qt.TextElideMode.ElideRight, 355)
-            painter.drawText(QRectF(x - 180, 32, 360, 20), _CENTER, labels)
+            labels = QFontMetrics(self._font).elidedText(labels, Qt.TextElideMode.ElideRight, width)
+            painter.drawText(QRectF(x - width / 2, 31, width, 20), _CENTER, labels)
 
     def _draw_event(self, painter: QPainter, index: int) -> None:
         event = self.graph.events[index]
@@ -234,10 +235,12 @@ class FlowGraphDialog(QDialog):
         finally:
             self._job = None
         self._show_page(0)
+        self._status.setText(self._describe_graph())
+
+    def _describe_graph(self) -> str:
         graph = self._graph
         if not graph.events:
-            self._status.setText(f"TCP 流 {self._number} 没有可绘制的帧。")
-            return
+            return f"TCP 流 {self._number} 没有可绘制的帧。"
         details = [f"{graph.total:,} 帧"]
         if not graph.has_syn:
             details.append("无握手")
@@ -246,7 +249,7 @@ class FlowGraphDialog(QDialog):
         if graph.total > MAX_GRAPH_PACKETS:
             details.append(f"仅绘制前 {MAX_GRAPH_PACKETS:,} 帧")
         details.append("单击箭头定位到包")
-        self._status.setText(" · ".join(details))
+        return " · ".join(details)
 
     def _show_page(self, page: int) -> None:
         count = len(self._graph.events) if self._graph else 0
@@ -275,9 +278,10 @@ class FlowGraphDialog(QDialog):
         if not path.suffix:
             path = path.with_suffix(".png")
         if self.export_png(path):
-            self._status.setText(f"已导出第 {self._page + 1} 页至 {path.name}")
+            result = f"已导出第 {self._page + 1} 页至 {path.name}"
         else:
-            self._status.setText(f"无法导出 {path.name}")
+            result = f"无法导出 {path.name}"
+        self._status.setText(f"{self._describe_graph()} · {result}")
 
     def export_png(self, path: Path) -> bool:
         image = QImage(self.scene.sceneRect().size().toSize(), QImage.Format.Format_RGB32)
