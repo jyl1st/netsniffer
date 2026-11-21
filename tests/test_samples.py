@@ -88,4 +88,6 @@ def test_samples_are_reproducible_and_readable(tmp_path):
     for alert, masked in zip(alerts[2:], ("b***", "f***", "s***")):
         assert masked in alert.description and "-example" not in alert.description
     events = analyze_expert(read_capture(first / "expert_events.pcap"))
-    assert {event.kind for event in events} == set(ExpertKind)
+    assert {event.kind for event in events} == {
+        ExpertKind.RETRANSMISSION, ExpertKind.DUPLICATE_ACK, ExpertKind.ZERO_WINDOW, ExpertKind.RESET,
+    }

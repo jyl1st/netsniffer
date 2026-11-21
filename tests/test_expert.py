@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import pytest
 from scapy.all import TCP
 
-from samples.make_samples import tcp_segment
+from samples.make_samples import tcp_handshake, tcp_segment
 from sniffer.analysis.expert import ExpertKind, ExpertSeverity, analyze_expert
 from sniffer.capture.pcap_io import read_capture
 from sniffer.model.packet import LINKTYPE_ETHERNET, PacketRecord
@@ -68,3 +69,37 @@ def test_retransmission_across_wrap_requires_the_whole_range_and_current_connect
     ]
     events = analyze_expert(_records(packets))
     assert [event.frame for event in events if event.kind == ExpertKind.RETRANSMISSION] == [2, 7, 9]
+
+
+@pytest.mark.parametrize("probe_data", [b"X", b""])
+def test_keep_alive_probes_and_replies_do_not_become_retransmissions_or_duplicate_acks(probe_data):
+    packets = [
+        *tcp_handshake(80),
+        tcp_segment(80, "PA", 1001, 2001) / b"data",
+        tcp_segment(80, "A", 2001, 1005, reply=True),
+    ]
+    for _ in range(3):
+        probe = tcp_segment(80, "A", 1004, 2001)
+        packets.extend([probe / probe_data if probe_data else probe, tcp_segment(80, "A", 2001, 1005, reply=True)])
+    events = analyze_expert(_records(packets))
+    assert [(event.frame, event.kind, event.severity) for event in events] == [
+        (frame, ExpertKind.KEEP_ALIVE, ExpertSeverity.NOTE) for frame in (6, 8, 10)
+    ]
+
+
+def test_keep_alive_wraps_and_does_not_hide_unrelated_duplicate_ack_or_fin_retransmission():
+    packets = [
+        tcp_segment(80, "S", 0xfffffffe),
+        tcp_segment(80, "SA", 2000, 0xffffffff, reply=True),
+        tcp_segment(80, "PA", 0xffffffff, 2001) / b"X",
+        tcp_segment(80, "A", 2001, 0, reply=True),
+        tcp_segment(80, "A", 0xffffffff, 2001) / b"X",
+        tcp_segment(80, "A", 2001, 0, reply=True),
+        tcp_segment(80, "FA", 0, 2001),
+        tcp_segment(80, "FA", 0, 2001),
+        tcp_segment(80, "A", 2001, 0, reply=True),
+    ]
+    events = analyze_expert(_records(packets))
+    assert [(event.frame, event.kind) for event in events] == [
+        (5, ExpertKind.KEEP_ALIVE), (8, ExpertKind.RETRANSMISSION), (9, ExpertKind.DUPLICATE_ACK),
+    ]
