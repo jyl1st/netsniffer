@@ -1,3 +1,6 @@
+from bisect import bisect_left, bisect_right
+from collections import defaultdict
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 
@@ -5,6 +8,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView
 
+from sniffer.analysis.process_map import ProcessMatch
 from sniffer.analysis.streams import StreamIndex
 from sniffer.gui.dialogs.packet_colors import DEFAULT_COLORS, readable_text
 from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
@@ -20,14 +24,44 @@ class TimeMode(Enum):
     PREVIOUS = "相对上一包"
 
 
+@dataclass(slots=True)
+class _StreamProcesses:
+    rows: list[int] = field(default_factory=list)
+    observed: dict[int, tuple[ProcessMatch, ...]] = field(default_factory=dict)
+    matches: tuple[ProcessMatch, ...] | None = ()
+
+    def add(self, row: int, matches: tuple[ProcessMatch, ...]) -> bool:
+        self.rows.append(row)
+        if self.matches is None or not matches:
+            return False
+        self.observed[row] = matches
+        if matches == self.matches:
+            return False
+        known = {match.local: match for match in self.matches}
+        for match in matches:
+            current = known.get(match.local)
+            if current is not None and current.owner.pid != match.owner.pid:
+                # 四元组复用后这个流号跨越多个归属，撤销所有推断。
+                self.matches = None
+                return True
+            if current is None or current.owner.name is None:
+                known[match.local] = match
+        updated = tuple(known.values())
+        changed = updated != self.matches
+        self.matches = updated
+        return changed
+
+
 class PacketTableModel(QAbstractTableModel):
     records_appended = Signal()
     records_replaced = Signal()
+    processes_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.records: list[PacketRecord] = []
         self._streams = StreamIndex()
+        self._tcp_processes: dict[int, _StreamProcesses] = defaultdict(_StreamProcesses)
         self._visible: list[int] | None = None
         self._first_time = None
         self._stored_bytes = 0
@@ -113,27 +147,79 @@ class PacketTableModel(QAbstractTableModel):
             self._stored_bytes += data_size
             additions.append(record.with_stream(self._streams))
         if additions:
+            first = len(self.records)
+            changed = self._backfill_processes(additions, first)
             if self._first_time is None:
                 self._first_time = next(
                     (item.timestamp for item in additions if item.timestamp is not None), None
                 )
             if self._visible is None:
-                first = len(self.records)
                 self.beginInsertRows(QModelIndex(), first, first + len(additions) - 1)
                 self.records.extend(additions)
                 self.endInsertRows()
             else:
                 self.records.extend(additions)
+            if changed:
+                self._notify_processes_changed(changed)
             self.records_appended.emit()
         return len(records) - len(additions)
+
+    def _backfill_processes(self, additions: list[PacketRecord], first: int) -> list[int]:
+        rows_to_tag = []
+        changed_streams = set()
+        for index, record in enumerate(additions):
+            flow, number = record.summary.flow, record.stream_id
+            if flow is None or flow.protocol != "tcp" or number is None:
+                continue
+            state = self._tcp_processes[number]
+            if state.add(first + index, record.processes):
+                changed_streams.add(number)
+            rows_to_tag.append((index, state))
+
+        changed = []
+        # 先看完整批次，再回填旧帧和新帧，避免在同一批中间传播冲突的归属。
+        for number in changed_streams:
+            state = self._tcp_processes[number]
+            for row in state.rows:
+                if row >= first:
+                    break
+                record = self.records[row]
+                matches = state.matches if state.matches is not None else state.observed.get(row, ())
+                if record.processes != matches:
+                    self.records[row] = replace(record, processes=matches)
+                    changed.append(row)
+            if state.matches is None:
+                state.observed.clear()
+        for index, state in rows_to_tag:
+            record = additions[index]
+            if state.matches and state.matches != record.processes:
+                additions[index] = replace(record, processes=state.matches)
+        return changed
+
+    def _notify_processes_changed(self, rows: list[int]) -> None:
+        rows.sort()
+        first, last = rows[0], rows[-1]
+        if self._visible is not None:
+            first = bisect_left(self._visible, first)
+            last = bisect_right(self._visible, last) - 1
+        if first <= last:
+            self.dataChanged.emit(
+                self.index(first, PROCESS_COLUMN), self.index(last, PROCESS_COLUMN),
+                [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
+            )
+        self.processes_changed.emit(tuple(rows))
 
     def replace(self, records: list[PacketRecord], *, streams: StreamIndex | None = None) -> None:
         if streams is None:
             streams = StreamIndex()
             records = [record.with_stream(streams) for record in records]
+        else:
+            records = list(records)
         self.beginResetModel()
         self.records = records
         self._streams = streams
+        self._tcp_processes.clear()
+        self._backfill_processes(records, 0)
         if self._visible is not None:
             self._visible = []
         self._stored_bytes = sum(len(record.raw) for record in records)
@@ -158,6 +244,15 @@ class PacketTableModel(QAbstractTableModel):
         self.beginInsertRows(QModelIndex(), first, first + len(original_rows) - 1)
         self._visible.extend(original_rows)
         self.endInsertRows()
+
+    def truncate_matches(self, start: int) -> None:
+        if self._visible is None:
+            return
+        first = bisect_left(self._visible, start)
+        if first < len(self._visible):
+            self.beginRemoveRows(QModelIndex(), first, len(self._visible) - 1)
+            del self._visible[first:]
+            self.endRemoveRows()
 
 
 class PacketTable(QTableView):

@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QTimer, Qt
 from PySide6.QtWidgets import (
@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from sniffer.analysis.follow import endpoint_label
 from sniffer.analysis.process_flows import ProcessStream, summarize_process_streams
 from sniffer.analysis.process_map import ProcessOwner
-from sniffer.model.packet import PacketRecord
+from sniffer.gui.packet_table import PacketTableModel
 
 _COLUMNS = ("TCP 流", "远端地址", "已关联包数", "已关联字节")
 
@@ -45,14 +45,16 @@ class _StreamTable(QAbstractTableModel):
 
 
 class ProcessStreamsDialog(QDialog):
-    def __init__(self, records: tuple[PacketRecord, ...], parent=None):
+    def __init__(self, packets: PacketTableModel, parent=None):
         super().__init__(parent)
         self.setWindowTitle("按进程查看 TCP 流")
         self.resize(690, 460)
         self.stream_number: int | None = None
+        self._packets = packets
         self._groups: list[tuple[ProcessOwner, tuple[ProcessStream, ...]]] = []
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetSniffer process streams")
-        self._job = self._worker.submit(summarize_process_streams, records)
+        self._job: Future | None = self._worker.submit(summarize_process_streams, tuple(packets.records))
+        self._dirty = False
 
         layout = QVBoxLayout(self)
         controls = QHBoxLayout()
@@ -85,33 +87,62 @@ class ProcessStreamsDialog(QDialog):
         layout.addWidget(buttons)
 
         self._timer = QTimer(self)
+        self._timer.setInterval(250)
         self._timer.timeout.connect(self._poll)
-        self._timer.start(25)
+        self._timer.start()
+        packets.processes_changed.connect(self._queue_refresh)
+        packets.records_replaced.connect(self._queue_refresh)
 
     def done(self, result: int) -> None:
         self._timer.stop()
+        self._packets.processes_changed.disconnect(self._queue_refresh)
+        self._packets.records_replaced.disconnect(self._queue_refresh)
         self._worker.shutdown(wait=False, cancel_futures=True)
         super().done(result)
 
+    def _queue_refresh(self, _rows=None) -> None:
+        self._dirty = True
+        if not self._timer.isActive():
+            self._timer.start()
+
     def _poll(self) -> None:
-        if not self._job.done():
-            return
-        self._timer.stop()
+        if self._job is not None:
+            if not self._job.done():
+                return
+            self._show_result(self._job)
+            self._job = None
+        if self._dirty:
+            self._dirty = False
+            self._job = self._worker.submit(summarize_process_streams, tuple(self._packets.records))
+        else:
+            self._timer.stop()
+
+    def _show_result(self, job: Future) -> None:
         try:
-            self._groups = self._job.result()
+            groups = job.result()
         except Exception as error:
             self._status.setText(f"无法汇总 TCP 流。{error}")
             return
-        if not self._groups:
-            self._status.setText("当前抓包暂无与进程关联的 TCP 流。")
-            return
+
+        current = self._owners.currentIndex()
+        pid = self._groups[current][0].pid if current >= 0 else None
+        self._groups = groups
+        selected = next((index for index, (owner, _) in enumerate(groups) if owner.pid == pid), 0)
+        self._owners.blockSignals(True)
+        self._owners.clear()
         self._owners.addItems([owner.label for owner, _ in self._groups])
-        self._owners.setEnabled(True)
+        self._owners.setCurrentIndex(selected if groups else -1)
+        self._owners.blockSignals(False)
+        self._owners.setEnabled(bool(groups))
+        self._show_owner(self._owners.currentIndex())
 
     def _show_owner(self, index: int) -> None:
         streams = self._groups[index][1] if index >= 0 else ()
         self._model.replace(streams)
-        self._status.setText(f"{len(streams):,} 条 TCP 流。双击应用该流的显示过滤。")
+        self._status.setText(
+            f"{len(streams):,} 条 TCP 流。双击应用该流的显示过滤。" if streams
+            else "当前抓包暂无与进程关联的 TCP 流。"
+        )
 
     def _open_stream(self, index: QModelIndex) -> None:
         if index.isValid():

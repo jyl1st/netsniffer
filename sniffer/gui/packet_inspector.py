@@ -22,7 +22,7 @@ class PacketInspector(QSplitter):
         self._packets = model
         self._revision = 0
         self._current: tuple[Key, PacketRecord, Decimal | None] | None = None
-        self._job: tuple[Key, Future] | None = None
+        self._job: tuple[Key, PacketRecord, Future] | None = None
         self._cache: OrderedDict[Key, Field] = OrderedDict()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="NetSniffer dissector")
 
@@ -43,6 +43,7 @@ class PacketInspector(QSplitter):
 
         table.selectionModel().currentRowChanged.connect(self._select_packet)
         model.modelAboutToBeReset.connect(self._reset)
+        model.processes_changed.connect(self._processes_changed)
         self.details.field_selected.connect(self._highlight_field)
         self.hex_view.byte_selected.connect(self.details.select_byte)
         self._timer = QTimer(self)
@@ -77,6 +78,18 @@ class PacketInspector(QSplitter):
         self.hex_view.set_packet(b"")
         self.details.show_message("选择一个包以查看协议字段。")
 
+    def _processes_changed(self, rows: tuple[int, ...]) -> None:
+        affected = set(rows)
+        for key in tuple(self._cache):
+            if key[1] in affected:
+                self._cache.pop(key)
+        if self._current is not None:
+            key, _, previous_time = self._current
+            if key[1] in affected:
+                self._current = key, self._packets.records[key[1]], previous_time
+                self.details.show_message("正在解析选中的包…")
+                self._start_job()
+
     def _select_packet(self, index, _previous) -> None:
         visible_row = index.row()
         if visible_row < 0 or visible_row >= self._packets.rowCount():
@@ -101,15 +114,18 @@ class PacketInspector(QSplitter):
         key, record, previous_time = self._current
         if key in self._cache:
             return
-        self._job = key, self._worker.submit(dissect_frame, record, key[1] + 1, previous_time)
+        self._job = key, record, self._worker.submit(dissect_frame, record, key[1] + 1, previous_time)
         self._timer.start()
 
     def _poll(self) -> None:
-        if self._job is None or not self._job[1].done():
+        if self._job is None or not self._job[2].done():
             return
-        key, result = self._job
+        key, record, result = self._job
         self._job = None
         self._timer.stop()
+        if key[0] != self._revision or self._packets.records[key[1]] is not record:
+            self._start_job()
+            return
         current = self._current is not None and self._current[0] == key
         try:
             tree = result.result()
@@ -118,10 +134,9 @@ class PacketInspector(QSplitter):
                 self.details.show_message(f"解析失败 · {error}")
                 return
         else:
-            if key[0] == self._revision:
-                self._cache[key] = tree
-                if len(self._cache) > MAX_CACHED_TREES:
-                    self._cache.popitem(last=False)
+            self._cache[key] = tree
+            if len(self._cache) > MAX_CACHED_TREES:
+                self._cache.popitem(last=False)
             if current:
                 self.details.show_fields(tree)
         self._start_job()

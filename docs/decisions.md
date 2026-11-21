@@ -123,3 +123,7 @@ TCP 重组让跨段字段可用于显示过滤，也引入了两个回归。第�
 进程视图按抓包时已关联的 PID 汇总 TCP 流、对端、包数和线上帧字节数。双击后使用流号查看完整的已捕获流，包括未关联 PID 的帧。采样间隔内开始并结束的连接可能没有标签。Windows 可进一步用 ETW 的 TCP/IP 连接事件缩短关联盲区。 [psutil 套接字 API](https://psutil.io/api/#psutil.net_connections) · [Windows ETW TCP/IP 事件](https://learn.microsoft.com/en-us/windows/win32/etw/tcpip)
 
 阶段 4 验收让 Chrome 访问两个本机 HTTP 测试端口，并通过 Npcap 回环抓取 33 帧。`proc.name == "chrome.exe"` 命中 20 帧，进程视图列出 3 条 TCP 流，远端地址覆盖两个测试端口。右键按 PID 过滤、双击流应用显示过滤以及 Follow Stream 还原 HTTP 请求与应答均通过。 [进程视图验收截图](images/phase4-loopback-process-streams.png)
+
+新连接的握手和第一个请求可能早于每秒一次的套接字快照。TCP 流任一帧获得归属后，列表按流号将进程匹配回填到已有帧并沿用到后续帧。匹配保留各自的本地端点，回环连接双方的 PID 可同时显示。如果同一本地端点在同一流内出现不同的 PID，列表撤销此前的推断，恢复并保留逐帧匹配。详情树使受影响的缓存失效，引用进程字段的显示过滤从需要重新评估的行继续处理。
+
+本机发出初始 SYN、源端点尚未关联 PID 时，抓包线程会唤醒快照线程，多次请求可合并，刷新之间至少留 100 ms。快照读取前已经关闭的套接字及入站短连接仍可能漏标。如果流的最后一帧也早于可用快照，列表没有可用的匹配来回填。UDP 只保留逐帧匹配。后续可用 ETW 连接事件补充快照采样。 [Windows ETW TCP/IP 事件](https://learn.microsoft.com/en-us/windows/win32/etw/tcpip)

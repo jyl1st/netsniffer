@@ -1,8 +1,10 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
 from ipaddress import IPv6Address, ip_address
+import logging
 from socket import AF_INET, AF_INET6, SOCK_DGRAM, SOCK_STREAM
 from threading import Event
+from time import perf_counter
 
 import psutil
 
@@ -10,6 +12,8 @@ from sniffer.analysis.streams import Endpoint, TransportFlow, TransportProtocol
 
 SocketKey = tuple[TransportProtocol, Endpoint, Endpoint | None]
 REFRESH_SECONDS = 1.0
+MIN_REFRESH_SECONDS = 0.1
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,18 +115,45 @@ def _read_snapshot() -> _Snapshot:
 class ProcessMapper:
     def __init__(self):
         self._snapshot = _Snapshot()
+        self._wake = Event()
+        self._stopped = Event()
+        self._logged_error = False
 
     def refresh(self) -> None:
         # 只交接构建完毕的快照。查询失败时不沿用过期的套接字所有者。
         try:
             self._snapshot = _read_snapshot()
         except (psutil.Error, OSError, ValueError):
-            self._snapshot = _Snapshot()
+            self._refresh_failed()
 
-    def run(self, stopped: Event) -> None:
-        while not stopped.is_set():
-            self.refresh()
-            stopped.wait(REFRESH_SECONDS)
+    def _refresh_failed(self) -> None:
+        self._snapshot = _Snapshot(local_ips=self._snapshot.local_ips)
+        if not self._logged_error:
+            _LOG.warning("无法刷新进程套接字快照", exc_info=True)
+            self._logged_error = True
+
+    def request_refresh(self, source_ip: bytes) -> None:
+        if source_ip in self._snapshot.local_ips:
+            self._wake.set()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._wake.set()
+
+    def run(self) -> None:
+        while not self._stopped.is_set():
+            self._wake.clear()
+            try:
+                self.refresh()
+            except Exception:
+                self._refresh_failed()
+            # 冷却期间的多个 SYN 合并成一次刷新请求。
+            finished = perf_counter()
+            earliest = finished + MIN_REFRESH_SECONDS
+            while (remaining := earliest - perf_counter()) > 0:
+                if self._stopped.wait(remaining):
+                    return
+            self._wake.wait(max(0, finished + REFRESH_SECONDS - perf_counter()))
 
     def match(self, flow: TransportFlow, *, initial_syn: bool = False) -> tuple[ProcessMatch, ...]:
         snapshot = self._snapshot

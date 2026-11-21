@@ -44,6 +44,7 @@ class CaptureSession:
 
     def stop(self) -> None:
         self._stop.set()
+        self._process_map.stop()
 
     def drain(self, limit: int = 1000) -> list[PacketRecord]:
         packets = []
@@ -71,6 +72,8 @@ class CaptureSession:
                 segment = record.summary.tcp
                 initial_syn = segment is not None and segment.flags & (SYN | ACK) == SYN
                 matches = self._process_map.match(flow, initial_syn=initial_syn)
+                if initial_syn and not any(match.local == flow.source for match in matches):
+                    self._process_map.request_refresh(flow.source[0])
                 if matches:
                     record = replace(record, processes=matches)
             try:
@@ -87,14 +90,14 @@ class CaptureSession:
                 raise OSError("Npcap 不可用。请安装 Npcap 后重新启动。")
             # 句柄由此线程拥有，启动失败和正常停止都由上下文管理器释放。
             with conf.L2listen(iface=self.settings.device, promisc=self.settings.promiscuous) as listener:
-                Thread(target=self._process_map.run, args=(self._stop,), name="NetSniffer process map", daemon=True).start()
+                Thread(target=self._process_map.run, name="NetSniffer process map", daemon=True).start()
                 self._capture(listener)
         except (OSError, Scapy_Exception, ValueError) as error:
             self.error = str(error)
         except Exception as error:
             self.error = f"{type(error).__name__}: {error}"
         finally:
-            self._stop.set()
+            self.stop()
             self.done.set()
 
     def _capture(self, listener) -> None:

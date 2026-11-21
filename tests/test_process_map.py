@@ -3,11 +3,14 @@ from dataclasses import replace
 from ipaddress import ip_address
 from pathlib import Path
 from socket import AF_INET, AF_INET6, SOCK_DGRAM, SOCK_STREAM
+from threading import Event, Thread
+from time import perf_counter
 from types import SimpleNamespace
 
 import psutil
 
-from samples.make_samples import HTTP_REQUEST, dns_packets, tcp_segment
+from samples.make_samples import HTTP_REQUEST, dns_packets, tcp_segment, tls_client_hello, tls_packets
+from sniffer.analysis import process_map
 from sniffer.analysis.process_flows import summarize_process_streams
 from sniffer.analysis.process_map import ProcessMapper, ProcessMatch, ProcessOwner
 from sniffer.analysis.streams import StreamIndex, TransportFlow
@@ -15,6 +18,7 @@ from sniffer.capture.engine import CaptureSession, CaptureSettings
 from sniffer.capture.pcap_io import read_capture, write_capture
 from sniffer.dissect.frame import dissect_frame
 from sniffer.filter.evaluator import compile_filter
+from sniffer.gui.packet_table import PROCESS_COLUMN, PacketTableModel
 from sniffer.model.packet import LINKTYPE_ETHERNET, PacketRecord
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
@@ -26,6 +30,12 @@ def _socket(local, remote=(), *, pid=10, kind=SOCK_STREAM, status=psutil.CONN_ES
 
 def _endpoint(address, port):
     return ip_address(address).packed, port
+
+
+def _receive(session, packet):
+    raw = bytes(packet)
+    header = SimpleNamespace(caplen=len(raw), len=len(raw), ts=SimpleNamespace(tv_sec=1, tv_usec=0))
+    session._receive(header, create_string_buffer(raw), LINKTYPE_ETHERNET)
 
 
 def _mapper(monkeypatch, sockets, *, addresses=((AF_INET, "192.0.2.10"),), names=None):
@@ -116,9 +126,7 @@ def test_capture_queue_tags_both_processes_and_saved_files_do_not_reassign_pids(
         _socket(("192.0.2.10", 49152), ("192.0.2.20", 8080), pid=41),
         _socket(("192.0.2.20", 8080), ("192.0.2.10", 49152), pid=42),
     ], names={41: "msedge.exe", 42: "python.exe"})
-    raw = bytes(tcp_segment(8080, "PA", 1001, 2001) / HTTP_REQUEST)
-    header = SimpleNamespace(caplen=len(raw), len=len(raw), ts=SimpleNamespace(tv_sec=1, tv_usec=0))
-    session._receive(header, create_string_buffer(raw), LINKTYPE_ETHERNET)
+    _receive(session, tcp_segment(8080, "PA", 1001, 2001) / HTTP_REQUEST)
     record, = session.drain()
     tree = dissect_frame(record)
     assert [owner.pid for owner in record.process_owners] == [41, 42]
@@ -147,3 +155,114 @@ def test_process_view_counts_one_packet_when_one_process_owns_both_ends():
     assert stream.peers == endpoints
     assert stream.packets == 2
     assert stream.wire_bytes == 2 * tcp.wire_length
+
+
+def test_later_process_snapshot_labels_the_whole_tcp_stream(monkeypatch):
+    sockets = []
+    session = CaptureSession(CaptureSettings("test"))
+    session._process_map = _mapper(monkeypatch, sockets, names={4242: "chrome.exe"})
+    model = PacketTableModel()
+    changes = []
+    model.dataChanged.connect(lambda first, last, _roles: changes.append((first.row(), last.row(), first.column())))
+
+    for packet in tls_packets(b"a.example"):
+        _receive(session, packet)
+    model.append(session.drain())
+    original = tuple(model.records)
+    _receive(session, tcp_segment(8443, "S", 1000))
+    model.append(session.drain())
+    assert all(not record.processes for record in model.records)
+
+    sockets.append(_socket(("192.0.2.10", 49152), ("192.0.2.20", 443), pid=4242))
+    session._process_map.refresh()
+    record = b"\x17\x03\x03\x00\x01x"
+    client_next = 1001 + len(tls_client_hello(b"a.example"))
+    _receive(session, tcp_segment(443, "PA", client_next, 2001) / record)
+    _receive(session, tcp_segment(443, "PA", 2001, client_next + len(record), reply=True) / record)
+    model.append(session.drain())
+
+    pid = compile_filter("proc.pid == 4242")
+    hello = compile_filter('proc.name == "chrome.exe" && tls.handshake.type == 1')
+    trees = [dissect_frame(frame) for frame in model.records]
+    assert [row for row, tree in enumerate(trees) if pid.matches(tree)] == [0, 1, 2, 3, 5, 6]
+    assert [row for row, tree in enumerate(trees) if hello.matches(tree)] == [3]
+    assert next(field.value for field in trees[3].walk() if field.name.endswith("extensions_server_name")) == "a.example"
+    assert all(not record.processes for record in original)
+    assert not model.records[4].processes
+    assert changes == [(0, 3, PROCESS_COLUMN)]
+    (owner, (stream,)), = summarize_process_streams(model.records)
+    assert owner == ProcessOwner(4242, "chrome.exe")
+    assert stream.packets == 6
+
+
+def test_tcp_process_backfill_preserves_both_local_endpoints_and_ignores_udp():
+    first, second, third, *_ = read_capture(SAMPLES / "tcp_http.pcap")
+    assert first.summary.flow is not None
+    client = ProcessMatch(first.summary.flow.source, ProcessOwner(10, "client.exe"))
+    server = ProcessMatch(first.summary.flow.destination, ProcessOwner(11, "server.exe"))
+    udp1, udp2 = read_capture(SAMPLES / "dns.pcap")
+    model = PacketTableModel()
+    model.replace([first, replace(second, processes=(server,)), udp1])
+    model.append([replace(third, processes=(client,)), replace(udp2, processes=(client,))])
+    assert [record.processes for record in model.records] == [
+        (server, client), (server, client), (), (server, client), (client,),
+    ]
+
+
+def test_reused_tuple_with_conflicting_pid_restores_per_frame_matches():
+    first, *others = read_capture(SAMPLES / "tcp_http.pcap")
+    assert first.summary.flow is not None
+    local = first.summary.flow.source
+    first_owner = ProcessMatch(local, ProcessOwner(100, "first.exe"))
+    next_owner = ProcessMatch(local, ProcessOwner(200, "next.exe"))
+    model = PacketTableModel()
+    model.append([first, replace(others[0], processes=(first_owner,)), others[1]])
+    assert [record.processes for record in model.records] == [(first_owner,)] * 3
+    model.append([replace(others[2], processes=(next_owner,)), others[3]])
+    model.append([others[4]])
+    assert [record.processes for record in model.records] == [(), (first_owner,), (), (next_owner,), (), ()]
+    assert {record.stream_id for record in model.records} == {0}
+
+
+def test_outbound_unmapped_syn_signals_refresh_even_with_the_peer_listener(monkeypatch):
+    session = CaptureSession(CaptureSettings("test"))
+    mapper = _mapper(monkeypatch, [
+        _socket(("192.0.2.20", 8080), pid=500, status=psutil.CONN_LISTEN),
+    ])
+    session._process_map = mapper
+    _receive(session, tcp_segment(8080, "S", 2000, reply=True))
+    _receive(session, tcp_segment(8080, "SA", 2000, 1001, reply=True))
+    assert not mapper._wake.is_set()
+    _receive(session, tcp_segment(8080, "S", 1000))
+    assert mapper._wake.is_set()
+    assert session.drain()[-1].process_owners[0].pid == 500
+
+
+def test_requested_refresh_is_rate_limited_and_worker_recovers(monkeypatch, caplog):
+    mapper = _mapper(monkeypatch, [])
+    monkeypatch.setattr(process_map, "REFRESH_SECONDS", 5.0)
+    attempts = []
+    started, refreshed = Event(), Event()
+
+    def refresh():
+        attempts.append(perf_counter())
+        if len(attempts) == 1:
+            started.set()
+            raise RuntimeError("unexpected socket enumeration error")
+        refreshed.set()
+        mapper.stop()
+
+    monkeypatch.setattr(mapper, "refresh", refresh)
+    worker = Thread(target=mapper.run, daemon=True)
+    worker.start()
+    try:
+        assert started.wait(2)
+        for _ in range(5):
+            mapper.request_refresh(_endpoint("192.0.2.10", 0)[0])
+        assert refreshed.wait(2)
+    finally:
+        mapper.stop()
+        worker.join(2)
+    assert len(attempts) == 2
+    assert attempts[1] - attempts[0] >= process_map.MIN_REFRESH_SECONDS
+    assert caplog.text.count("无法刷新进程套接字快照") == 1

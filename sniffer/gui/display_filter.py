@@ -44,6 +44,7 @@ class DisplayFilterController(QObject):
         self._timer.timeout.connect(self._poll)
         model.records_appended.connect(self._schedule)
         model.records_replaced.connect(self._restart)
+        model.processes_changed.connect(self._processes_changed)
 
     def apply(self, program: FilterProgram | None) -> None:
         self._program = program
@@ -55,12 +56,23 @@ class DisplayFilterController(QObject):
         self._timer.stop()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def _restart(self) -> None:
+    def _restart(self, start: int = 0) -> None:
         self._cancelled.set()
         self._cancelled = Event()
         self._generation += 1
-        self._evaluated = 0
+        self._evaluated = start
         self._schedule()
+
+    def _processes_changed(self, rows: tuple[int, ...]) -> None:
+        if self._program is None or self._program.required.isdisjoint(("proc", "proc.pid", "proc.name")):
+            return
+        scheduled = self._evaluated
+        if self._job is not None and self._job[0] == self._generation:
+            scheduled = self._job[1]
+        if rows[0] < scheduled:
+            start = min(rows[0], self._evaluated)
+            self._model.truncate_matches(start)
+            self._restart(start)
 
     def _schedule(self) -> None:
         if self._program is None:

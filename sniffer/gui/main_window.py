@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
 
     def _show_process_streams(self) -> None:
-        dialog = ProcessStreamsDialog(tuple(self.packet_model.records), self)
+        dialog = ProcessStreamsDialog(self.packet_model, self)
         dialog.exec()
         number = dialog.stream_number
         dialog.deleteLater()
