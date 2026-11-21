@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"已保存 {path.name}")
             else:
                 records = preview.records
-                self.packet_model.replace(records)
+                self.packet_model.replace(records, streams=preview.streams)
                 self._model_drops = 0
                 self.pages.setCurrentWidget(self.packet_page)
                 self.packet_table.scrollToTop()

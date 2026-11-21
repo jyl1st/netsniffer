@@ -55,7 +55,7 @@ tcp.flags.ece tcp.flags.fin tcp.flags.psh tcp.flags.rst tcp.flags.syn tcp.flags.
 tcp.incomplete tcp.len tcp.option tcp.option.incomplete tcp.option.kind tcp.option.length tcp.options
 tcp.options.incomplete tcp.options.mss_val tcp.options.sack_le tcp.options.sack_re
 tcp.options.timestamp.tsecr tcp.options.timestamp.tsval tcp.options.wscale.shift tcp.payload tcp.seq
-tcp.srcport tcp.urgent_pointer tcp.window_size
+tcp.srcport tcp.stream tcp.urgent_pointer tcp.window_size
 tls tls.handshake tls.handshake.ciphersuite tls.handshake.ciphersuites tls.handshake.comp_method
 tls.handshake.compression_methods tls.handshake.extension tls.handshake.extension.incomplete
 tls.handshake.extension.len tls.handshake.extension.type tls.handshake.extensions
@@ -66,7 +66,7 @@ tls.handshake.extensions_server_name.incomplete tls.handshake.extensions_support
 tls.handshake.incomplete tls.handshake.length tls.handshake.random tls.handshake.session_id
 tls.handshake.session_id_length tls.handshake.type tls.handshake.version tls.record
 tls.record.content_type tls.record.length tls.record.payload tls.record.truncated tls.record.version
-udp udp.checksum udp.checksum.valid udp.dstport udp.incomplete udp.length udp.payload udp.srcport
+udp udp.checksum udp.checksum.valid udp.dstport udp.incomplete udp.length udp.payload udp.srcport udp.stream
 udp.truncated
 vlan vlan.dei vlan.etype vlan.id vlan.incomplete vlan.priority
 """.split())

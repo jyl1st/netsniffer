@@ -13,7 +13,7 @@ from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QEventLoop, QSettings, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
-from sniffer.capture.pcap_io import read_capture, write_capture
+from sniffer.capture.pcap_io import read_capture, read_capture_preview, write_capture
 from sniffer.gui.display_filter import DisplayFilterController
 from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_table import PacketTable, PacketTableModel
@@ -108,7 +108,8 @@ def main() -> int:
         controller.progress.connect(bar.show_progress)
         layout.addWidget(bar)
         layout.addWidget(PacketTable(model, window))
-        model.replace(read_capture(capture))
+        preview = read_capture_preview(capture)
+        model.replace(preview.records, streams=preview.streams)
         window.show()
         try:
             for attempt in range(1, args.runs + 1):

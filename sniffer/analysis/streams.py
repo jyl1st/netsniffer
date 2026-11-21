@@ -1,0 +1,29 @@
+from dataclasses import dataclass
+from typing import Literal
+
+TransportProtocol = Literal["tcp", "udp"]
+Endpoint = tuple[bytes, int]
+
+
+@dataclass(frozen=True, slots=True)
+class TransportFlow:
+    protocol: TransportProtocol
+    source: Endpoint
+    destination: Endpoint
+
+
+class StreamIndex:
+    """按入库顺序为一次抓包分配 TCP 和 UDP 流编号。"""
+
+    def __init__(self):
+        self._numbers: dict[TransportProtocol, dict[tuple[Endpoint, Endpoint], int]] = {
+            "tcp": {}, "udp": {},
+        }
+
+    def number(self, flow: TransportFlow) -> int:
+        # 地址和端口成对排序，使回包复用同一编号。
+        first, second = flow.source, flow.destination
+        if first > second:
+            first, second = second, first
+        numbers = self._numbers[flow.protocol]
+        return numbers.setdefault((first, second), len(numbers))

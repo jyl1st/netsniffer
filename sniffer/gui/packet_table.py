@@ -5,6 +5,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView
 
+from sniffer.analysis.streams import StreamIndex
 from sniffer.gui.dialogs.packet_colors import DEFAULT_COLORS, readable_text
 from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
 
@@ -25,6 +26,7 @@ class PacketTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.records: list[PacketRecord] = []
+        self._streams = StreamIndex()
         self._visible: list[int] | None = None
         self._first_time = None
         self._stored_bytes = 0
@@ -106,7 +108,7 @@ class PacketTableModel(QAbstractTableModel):
             if self._stored_bytes + data_size > MAX_BYTES:
                 break
             self._stored_bytes += data_size
-            additions.append(record)
+            additions.append(record.with_stream(self._streams))
         if additions:
             if self._first_time is None:
                 self._first_time = next(
@@ -122,9 +124,13 @@ class PacketTableModel(QAbstractTableModel):
             self.records_appended.emit()
         return len(records) - len(additions)
 
-    def replace(self, records: list[PacketRecord]) -> None:
+    def replace(self, records: list[PacketRecord], *, streams: StreamIndex | None = None) -> None:
+        if streams is None:
+            streams = StreamIndex()
+            records = [record.with_stream(streams) for record in records]
         self.beginResetModel()
         self.records = records
+        self._streams = streams
         if self._visible is not None:
             self._visible = []
         self._stored_bytes = sum(len(record.raw) for record in records)

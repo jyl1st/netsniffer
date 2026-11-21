@@ -56,5 +56,8 @@ def dissect_frame(
         children.append(span.field("frame.time", "捕获时刻（Unix 秒）", record.timestamp, 0, 0))
         if previous_time is not None:
             children.append(span.field("frame.time_delta", "距上一包（秒）", record.timestamp - previous_time, 0, 0))
+    if record.stream_id is not None and record.summary.flow is not None:
+        protocol = record.summary.flow.protocol
+        children.append(span.field(f"{protocol}.stream", f"{protocol.upper()} 流编号", record.stream_id, 0, 0))
     children.append(registry.dispatch("link", record.linktype, span))
     return span.layer("frame", f"帧 {number} · 捕获 {len(span)} 字节", children)

@@ -6,6 +6,7 @@ from tempfile import NamedTemporaryFile
 
 from scapy.utils import RawPcapNgReader, RawPcapNgWriter, RawPcapReader, RawPcapWriter
 
+from sniffer.analysis.streams import StreamIndex
 from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
 
 NANOSECONDS = 10**9
@@ -16,6 +17,7 @@ MAX_FRAME_BYTES = 262_144
 class CapturePreview:
     records: list[PacketRecord]
     truncated: bool
+    streams: StreamIndex
 
 
 def read_capture(path: Path) -> list[PacketRecord]:
@@ -24,6 +26,7 @@ def read_capture(path: Path) -> list[PacketRecord]:
 
 def read_capture_preview(path: Path) -> CapturePreview:
     records = []
+    streams = StreamIndex()
     stored_bytes = 0
     with RawPcapReader(str(path)) as reader:
         is_pcapng = isinstance(reader, RawPcapNgReader)
@@ -34,7 +37,7 @@ def read_capture_preview(path: Path) -> CapturePreview:
                 break
             stored_bytes += len(data)
             if len(records) >= MAX_PACKETS or stored_bytes > MAX_BYTES:
-                return CapturePreview(records, truncated=True)
+                return CapturePreview(records, truncated=True, streams=streams)
             if is_pcapng:
                 linktype = metadata.linktype
                 ticks = metadata.tshigh << 32 | metadata.tslow if metadata.tshigh is not None else None
@@ -45,8 +48,9 @@ def read_capture_preview(path: Path) -> CapturePreview:
                 linktype = reader.linktype
                 resolution = NANOSECONDS if reader.nano else 10**6
                 timestamp = Decimal(metadata.sec) + Decimal(metadata.usec) / resolution
-            records.append(PacketRecord.from_bytes(timestamp, data, linktype, metadata.wirelen))
-    return CapturePreview(records, truncated=False)
+            record = PacketRecord.from_bytes(timestamp, data, linktype, metadata.wirelen)
+            records.append(record.with_stream(streams))
+    return CapturePreview(records, truncated=False, streams=streams)
 
 
 def write_capture(path: Path, records: Sequence[PacketRecord]) -> None:

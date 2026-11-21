@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from ipaddress import ip_address
 from struct import unpack_from
 
+from sniffer.analysis.streams import StreamIndex, TransportFlow
 from sniffer.dissect.app_detect import identify_application
 from sniffer.dissect.checksum import checksum_valid, transport_checksum
 from sniffer.dissect.ethernet import VLAN_TYPES
@@ -29,6 +30,7 @@ class PacketSummary:
     protocol: str
     info: str = ""
     error: bool = False
+    flow: TransportFlow | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,12 +40,19 @@ class PacketRecord:
     linktype: int
     wire_length: int
     summary: PacketSummary
+    # 编号由帧入库时的抓包顺序决定，不属于帧本身。
+    stream_id: int | None = field(default=None, compare=False)
 
     @classmethod
     def from_bytes(
         cls, timestamp: Decimal | None, raw: bytes, linktype: int, wire_length: int
     ) -> "PacketRecord":
         return cls(timestamp, raw, linktype, wire_length, summarize(raw, linktype))
+
+    def with_stream(self, streams: StreamIndex) -> "PacketRecord":
+        if self.summary.flow is None:
+            return self
+        return replace(self, stream_id=streams.number(self.summary.flow))
 
 
 def summarize(raw: bytes, linktype: int) -> PacketSummary:
@@ -141,6 +150,7 @@ def _transport(
         checksum_end = None
         reset = False
         keepalive = False
+        has_base_header = False
         if protocol == 6 and size >= 14:
             value = raw[offset + 13]
             reset = bool(value & 4)
@@ -148,6 +158,7 @@ def _transport(
             if flags:
                 info += f" [{flags}]"
             header_size = (raw[offset + 12] >> 4) * 4
+            has_base_header = size >= 20 and header_size >= 20
             if 20 <= header_size <= size:
                 payload_start, checksum_end = offset + header_size, end
                 keepalive = (value == 0x10 and not raw[offset + 12] & 15
@@ -155,6 +166,7 @@ def _transport(
         if protocol == 17 and size >= 8:
             udp_length, udp_checksum = unpack_from("!HH", raw, offset + 4)
             if udp_length >= 8:
+                has_base_header = True
                 payload_start = offset + 8
                 end = min(end, offset + udp_length)
                 if udp_length <= size and (udp_checksum or network.version == 6):
@@ -172,7 +184,13 @@ def _transport(
             bad_checksum |= transport_checksum(Span(raw, offset, checksum_end), network, protocol) is False
         if bad_checksum:
             info += " · 校验和异常"
-        return PacketSummary(source, destination, name, info, reset or bad_checksum)
+        flow = None
+        if has_base_header:
+            flow = TransportFlow(
+                "tcp" if protocol == 6 else "udp",
+                (network.source, source_port), (network.destination, destination_port),
+            )
+        return PacketSummary(source, destination, name, info, reset or bad_checksum, flow)
     if protocol in (1, 58) and size >= 2:
         if size >= 4 and network.complete:
             if protocol == 1:
