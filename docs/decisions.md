@@ -225,3 +225,7 @@ NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号�
 2. 把 `netsniffer_appid.lua` 放入该目录，重启 Wireshark，打开合成样例。也可直接用 `tshark -X lua_script:wireshark_plugin/netsniffer_appid.lua` 做离线对照。
 3. 选中有识别结果的帧，展开「NetSniffer 应用识别」，右键应用识别字段并选「应用为列」。可用 `netsniffer.mismatch == 1` 找到内容与端口不符的帧。`tcp_reassembly.pcap` 中的续段也可展示端口候选未确认的情况。
 4. 打开「工具 → NetSniffer 应用识别统计」。Listener 对整份抓包统计各应用帧数及端口不符数。「Unconfirmed」汇总有负载、端口不符且未确认应用的帧。 [Wireshark Lua 菜单与窗口 API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Gui.html) · [Listener API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Listener.html)
+
+#### Wireshark 4.4.5 实机验收
+
+合成演示抓包 `phase6-lua-demo.pcap` 在包列表显示 `netsniffer.app` 自定义列。第 1 帧的协议树显示应用为 HTTP、识别依据为内容特征、端口猜测为 TLS、端口不符为 `True`。工具菜单的统计窗口显示已识别 11 帧，端口不符 1 帧。HTTP 共 2 帧，其中 1 帧端口不符。 [自定义列和协议树](images/phase6-lua-column.png) · [统计窗口](images/phase6-lua-stats.png)
