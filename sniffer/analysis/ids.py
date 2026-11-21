@@ -21,6 +21,7 @@ MAX_FORM_BYTES = 16_384
 MAX_FTP_LINE_BYTES = 4_096
 FTP_CONTROL_PORT = 21
 PASSWORD_FIELDS = frozenset((b"password", b"passwd", b"pwd", b"pass"))
+FORM_USERNAME_FIELDS = frozenset((b"username", b"user"))
 
 Direction = tuple[Endpoint, Endpoint]
 
@@ -303,15 +304,21 @@ class _Credentials:
         if not body:
             return
         masked_fields = []
+        username = ""
         for item in bytes(body).split(b"&"):
             name, equal, value = item.partition(b"=")
+            if not equal or not value:
+                continue
             decoded_name = _form_decode(name).lower()
-            if equal and value and decoded_name in PASSWORD_FIELDS:
+            if decoded_name in PASSWORD_FIELDS:
                 masked_fields.append(f"{decoded_name.decode('ascii')}={_mask(_form_decode(value))}")
+            elif not username and decoded_name in FORM_USERNAME_FIELDS:
+                username = _visible(_form_decode(value))
         if masked_fields:
             frames = tuple(sorted(form.frames | {form.frame}))
             summary = "、".join(masked_fields)
-            self._report(source, frames, f"HTTP POST 表单含明文密码字段 {summary}。")
+            user = f"用户 {username}，" if username else ""
+            self._report(source, frames, f"HTTP POST 表单{user}含明文密码字段 {summary}。")
 
     def _read_ftp(self, payload: bytes, tcp: TcpSegment, key: Direction, frame: int) -> None:
         state = self._ftp.setdefault(key, _FtpDirection())

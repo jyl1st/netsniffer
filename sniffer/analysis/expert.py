@@ -99,7 +99,7 @@ def analyze_expert(records: Sequence[PacketRecord]) -> tuple[ExpertEvent, ...]:
         if length and direction.retransmits(tcp.sequence, length):
             events.append(ExpertEvent(
                 warning, ExpertKind.RETRANSMISSION, frame,
-                f"Seq={tcp.sequence} 的 {length} 个序号已在此方向出现（含 SYN/FIN 的序号）。",
+                f"从 Seq={tcp.sequence} 开始的 {length} 个序号已在本方向发过。",
             ))
         if flags & ACK:
             signature = tcp.ack, tcp.window

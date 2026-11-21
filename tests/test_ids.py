@@ -135,9 +135,10 @@ def test_form_post_reassembles_observed_body_and_matches_decoded_case_insensitiv
 
 def test_truncated_form_reports_only_material_that_was_captured():
     payload = (b"POST / HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n"
-               b"Content-Length: 999\r\n\r\npassword=truncated")
+               b"Content-Length: 999\r\n\r\nusername=demo%2Dform&password=truncated")
     alert, = analyze_alerts(_records([tcp_segment(80, "PA", 1001) / payload]))
-    assert "password=t***" in alert.description and "truncated" not in repr(alert)
+    assert "demo-form" in alert.description and "password=t***" in alert.description
+    assert "truncated" not in repr(alert)
 
 
 def test_ftp_pass_uses_username_and_masks_split_password_once():
