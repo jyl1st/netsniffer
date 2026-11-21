@@ -17,6 +17,7 @@ from sniffer.capture.interfaces import list_adapters
 from sniffer.capture.pcap_io import read_capture_preview, write_capture
 from sniffer.filter.fields import known_field
 from sniffer.gui.capture_filter import CaptureFilterBox
+from sniffer.gui.dialogs.capture_analysis import ExpertInfoDialog, SecurityAlertsDialog
 from sniffer.gui.dialogs.flow_graph_dialog import FlowGraphDialog
 from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
@@ -93,6 +94,9 @@ class MainWindow(QMainWindow):
         self._setup_view_menu()
         statistics = self.menuBar().addMenu("统计(&S)")
         statistics.addAction("TCP 时序图…", self._show_flow_graph)
+        analysis = self.menuBar().addMenu("分析(&A)")
+        analysis.addAction("专家信息…", lambda: self._show_capture_analysis(ExpertInfoDialog))
+        analysis.addAction("安全告警…", lambda: self._show_capture_analysis(SecurityAlertsDialog))
         self._counts = QLabel()
         self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
         self.statusBar().addPermanentWidget(self._counts)
@@ -308,6 +312,16 @@ class MainWindow(QMainWindow):
         dialog.exec()
         frame = dialog.frame_number
         dialog.deleteLater()
+        self._locate_capture_frame(frame, records)
+
+    def _show_capture_analysis(self, dialog_type: type[ExpertInfoDialog] | type[SecurityAlertsDialog]) -> None:
+        dialog = dialog_type(self.packet_model, self)
+        dialog.exec()
+        frame, records = dialog.frame_number, dialog.capture_records
+        dialog.deleteLater()
+        self._locate_capture_frame(frame, records)
+
+    def _locate_capture_frame(self, frame: int | None, records: list[PacketRecord]) -> None:
         if frame is None:
             return
         if records is not self.packet_model.records:
