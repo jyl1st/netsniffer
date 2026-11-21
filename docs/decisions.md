@@ -148,6 +148,8 @@ NeverSSL 的 TCP 流 291 完整还原了抓到的明文 HTTP 会话。双向 ASC
 
 `samples/tcp_flow_graph.pcap` 有完整的 HTTP 握手与挥手、RST 中断流及无握手流。Windows Qt 窗口验收中，流 0 第 1–3 帧标注三次握手，第 7–10 帧标注四次挥手。已验证统计菜单、包列表右键、Follow Stream 三个入口，以及未过滤、保留当前流过滤和目标被过滤隐藏时的跳转。 [合成样例截图](images/phase5-flowgraph-sample.png)
 
+WLAN 实抓截图中，TCP 流 90 显示三次握手、双向 HTTP 数据和 `svchost.exe` 进程标签。主列表选中的第 4177 帧是 HTTP `200 OK`，对应图中 187 字节的应答。图中能看到两端的 FIN 和对第一个 FIN 的确认，第二个 FIN 的 ACK 未出现在这 8 帧中。完整四次挥手以合成样例验收。 [WLAN 实抓截图](images/phase5-flowgraph-wlan.png)
+
 #### TCP 摘要字段的回环复测
 
 在同一台 Windows 机器上，以阶段 4 末尾 `a240f22` 对比补充三个 TCP 摘要字段后的代码。用 Npcap 回环抓包和正常主窗口列表，Qt 以离屏方式运行，每档定速发送 4 秒。发包进程独立于界面进程，界面用 30 ms Qt 计时器记录实际最大间隔。UDP 档复用历史测试方法。另加 TCP 单向 60 字节负载档，BPF 只留发往测试端口的含数据帧，以覆盖新增字段读取路径。
