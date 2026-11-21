@@ -215,7 +215,7 @@ NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号�
 
 ### Wireshark Lua 应用识别
 
-`wireshark_plugin/netsniffer_appid.lua` 在 Wireshark 4.4.5 以 postdissector 读取本帧 TCP/UDP 负载，按强内容特征、经内容校验的端口候选、弱 QUIC 长头特征依次判定。`netsniffer.app` 与 `netsniffer.basis` 给出应用和依据。`netsniffer.port_guess` 单独记录端口猜测。有负载且存在端口候选时，内容支持另一协议或无法确认候选，均会标记 `netsniffer.mismatch=True`。空负载只保留端口猜测。8080 在两边的端口表内都映射为 HTTP，确认 HTTP 时不算不符。合成演示包第 1 帧把 HTTP 发往 TCP 443，内容判定 HTTP、端口猜测 TLS，因而不符。
+`wireshark_plugin/netsniffer_appid.lua` 在 Wireshark 4.4.5 以 postdissector 读取本帧 TCP/UDP 负载，按强内容特征、经内容校验的端口候选、弱 QUIC 长头特征依次判定。`netsniffer.app` 与 `netsniffer.basis` 给出应用和依据。`netsniffer.port_guess` 单独记录端口猜测。`netsniffer.mismatch=True` 表示已确认的协议与端口猜测不同。`netsniffer.unconfirmed=True` 表示有负载、有端口猜测且当前帧内容无法确认协议。空负载只保留端口猜测。8080 在两边的端口表内都映射为 HTTP，确认 HTTP 时与端口猜测一致。合成演示包第 1 帧把 HTTP 发往 TCP 443，内容判定 HTTP、端口猜测 TLS，因而不符。
 
 执行 `python -m tools.compare_lua_appid`，用 TShark 4.4.5 对 `samples/` 全部 **17 个 pcap、214 帧**比较 `app` 和 `basis`，一致率为 **100%**，单帧口径无不一致帧。脚本另列 Python 流级结果。`tcp_reassembly.pcap` 的帧 5、10、15 分别补齐 TLS、HTTP 和 DNS，`plaintext_credentials.pcap` 的帧 5、10 及 `security_demo.pcap` 的帧 50、55 也涉及重组或沿用流级识别。这些是单帧插件与完整 NetSniffer 的范围差异。TLS 记录头可先识别应用，跨段 SNI、重组 HTTP 头部及 DNS 消息由 Python 重组路径提供。
 
@@ -223,9 +223,11 @@ NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号�
 
 1. 在 Wireshark 4.4.5 打开「帮助 → 关于 Wireshark → 文件夹」，确认 `Personal Lua Plugins`。Windows 本机的个人目录是 `%APPDATA%\Wireshark\plugins`，与 `tshark -G folders` 输出一致。
 2. 把 `netsniffer_appid.lua` 放入该目录，重启 Wireshark，打开合成样例。也可直接用 `tshark -X lua_script:wireshark_plugin/netsniffer_appid.lua` 做离线对照。
-3. 选中有识别结果的帧，展开「NetSniffer 应用识别」，右键应用识别字段并选「应用为列」。可用 `netsniffer.mismatch == 1` 找到内容与端口不符的帧。`tcp_reassembly.pcap` 中的续段也可展示端口候选未确认的情况。
-4. 打开「工具 → NetSniffer 应用识别统计」。Listener 对整份抓包统计各应用帧数及端口不符数。「Unconfirmed」汇总有负载、端口不符且未确认应用的帧。 [Wireshark Lua 菜单与窗口 API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Gui.html) · [Listener API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Listener.html)
+3. 选中有识别结果的帧，展开「NetSniffer 应用识别」，右键应用识别字段并选「应用为列」。用 `netsniffer.mismatch == 1` 查找已识别协议与端口猜测不同的帧。用 `netsniffer.unconfirmed == 1` 查找候选未确认的帧，`tcp_reassembly.pcap` 中的续段可演示后一种情况。
+4. 打开「工具 → NetSniffer 应用识别统计」。Listener 对整份抓包分列统计「端口不符」和「未确认」。已识别及端口不符帧按已识别应用分组，未确认帧按端口猜测分组。 [Wireshark Lua 菜单与窗口 API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Gui.html) · [Listener API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Listener.html)
 
 #### Wireshark 4.4.5 实机验收
 
-合成演示抓包 `phase6-lua-demo.pcap` 在包列表显示 `netsniffer.app` 自定义列。第 1 帧的协议树显示应用为 HTTP、识别依据为内容特征、端口猜测为 TLS、端口不符为 `True`。工具菜单的统计窗口显示已识别 11 帧，端口不符 1 帧。HTTP 共 2 帧，其中 1 帧端口不符。 [自定义列和协议树](images/phase6-lua-column.png) · [统计窗口](images/phase6-lua-stats.png)
+`v0.9` 的合成演示抓包 `phase6-lua-demo.pcap` 在包列表显示 `netsniffer.app` 自定义列。第 1 帧的协议树显示应用为 HTTP、识别依据为内容特征、端口猜测为 TLS、端口不符为 `True`。工具菜单的统计窗口显示已识别 11 帧，端口不符 1 帧。HTTP 共 2 帧，其中 1 帧端口不符。 [自定义列和协议树](images/phase6-lua-column.png) · [v0.9 统计窗口](images/phase6-lua-stats.png)
+
+拆分口径后，TShark 4.4.5 对 WLAN `phase4-wlan-proc-sni.pcap` 的 9,122 帧统计得出 `netsniffer.mismatch == 1` 为 **0** 帧，`netsniffer.unconfirmed == 1` 为 **4,436** 帧。使用独立的 Wireshark 配置目录加载工作区 Lua，以避免已安装的 v0.9 插件参与统计。17 个合成样例的 `app` 和 `basis` 仍为 **214/214 帧一致**。`v0.9` 远端标签仍指向原验收提交 `3aaeeff`。

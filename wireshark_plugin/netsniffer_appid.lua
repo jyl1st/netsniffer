@@ -5,7 +5,8 @@
 -- TCP_PORTS / UDP_PORTS              同一端口表，目的端口优先         port_guess
 -- _validated_summary                 DNS、DHCP、NTP、SSDP 最小结构     端口（内容已校验）
 -- quic_long_header                   QUIC 连接 ID、版本和长度边界       弱特征
--- _rejected / 强特征与候选不符        有负载时标记 mismatch
+-- _rejected                          有负载、有候选、未识别           unconfirmed
+-- 识别结果与端口候选不同              已确认另一协议时标记 mismatch
 -- 只读当前帧的传输层字节，保持 TCP 重组和应用详情解析独立于本插件。
 
 -- 同时从个人插件目录和 -X lua_script 加载时复用同一次注册。
@@ -16,7 +17,8 @@ local app = ProtoField.string("netsniffer.app", "应用识别")
 local basis = ProtoField.string("netsniffer.basis", "识别依据")
 local port_guess = ProtoField.string("netsniffer.port_guess", "端口猜测")
 local mismatch = ProtoField.bool("netsniffer.mismatch", "内容和端口不符")
-protocol.fields = {app, basis, port_guess, mismatch}
+local unconfirmed = ProtoField.bool("netsniffer.unconfirmed", "端口猜测未确认")
+protocol.fields = {app, basis, port_guess, mismatch, unconfirmed}
 
 local tcp_source = Field.new("tcp.srcport")
 local tcp_target = Field.new("tcp.dstport")
@@ -237,7 +239,8 @@ function protocol.dissector(tvb, pinfo, tree)
         node:add(basis, reason):set_generated()
     end
     if guess then node:add(port_guess, guess):set_generated() end
-    node:add(mismatch, length > 0 and guess ~= nil and guess ~= identified):set_generated()
+    node:add(mismatch, guess ~= nil and identified ~= nil and guess ~= identified):set_generated()
+    node:add(unconfirmed, length > 0 and guess ~= nil and identified == nil):set_generated()
 end
 
 register_postdissector(protocol)
@@ -246,29 +249,42 @@ package.loaded.netsniffer_appid = true
 if gui_enabled() then
     local app_value = Field.new("netsniffer.app")
     local mismatch_value = Field.new("netsniffer.mismatch")
+    local unconfirmed_value = Field.new("netsniffer.unconfirmed")
+    local guess_value = Field.new("netsniffer.port_guess")
 
     local function open_statistics()
         local window = TextWindow.new("NetSniffer 应用识别统计")
         local listener = Listener.new("frame", "netsniffer")
-        local counts, identified_count, mismatch_count = {}, 0, 0
+        local counts, identified_count, mismatch_count, unconfirmed_count = {}, 0, 0, 0
+
+        local function is_true(info)
+            return info and (info.value == true or info.value == 1)
+        end
 
         function listener.packet()
-            local detected, differs = app_value(), mismatch_value()
-            local different = differs and (differs.value == true or differs.value == 1)
-            if not detected and not different then return end
-            local name = detected and detected.value or "Unconfirmed"
-            local count = counts[name] or {frames = 0, mismatches = 0}
+            local detected = app_value()
+            local not_confirmed = is_true(unconfirmed_value())
+            if not detected and not not_confirmed then return end
+            -- 已识别按识别结果分组，未确认按候选协议分组。
+            local name = detected and detected.value or guess_value().value
+            local count = counts[name] or {frames = 0, mismatches = 0, unconfirmed = 0}
             counts[name] = count
-            count.frames = count.frames + 1
-            if detected then identified_count = identified_count + 1 end
-            if different then
+            if detected then
+                count.frames = count.frames + 1
+                identified_count = identified_count + 1
+            end
+            if is_true(mismatch_value()) then
                 count.mismatches = count.mismatches + 1
                 mismatch_count = mismatch_count + 1
+            end
+            if not_confirmed then
+                count.unconfirmed = count.unconfirmed + 1
+                unconfirmed_count = unconfirmed_count + 1
             end
         end
 
         function listener.reset()
-            counts, identified_count, mismatch_count = {}, 0, 0
+            counts, identified_count, mismatch_count, unconfirmed_count = {}, 0, 0, 0
         end
 
         local function draw()
@@ -276,19 +292,19 @@ if gui_enabled() then
             for name in pairs(counts) do names[#names + 1] = name end
             table.sort(names)
             local lines = {
-                string.format("整份抓包 · 已识别 %d 帧 · 端口不符 %d 帧", identified_count, mismatch_count),
+                string.format("整份抓包 · 已识别 %d 帧 · 端口不符 %d 帧 · 未确认 %d 帧",
+                              identified_count, mismatch_count, unconfirmed_count),
                 "",
-                "应用 / App             帧数   不符",
-                "----------------------------------",
+                "应用 / App                已识别  端口不符    未确认",
+                "---------------------------------------------------",
             }
             for _, name in ipairs(names) do
                 local count = counts[name]
-                lines[#lines + 1] = string.format("%-20s %6d %6d", name, count.frames, count.mismatches)
+                lines[#lines + 1] = string.format("%-20s %10d %9d %9d",
+                                                 name, count.frames, count.mismatches, count.unconfirmed)
             end
             if #names == 0 then lines[#lines + 1] = "当前抓包暂无识别结果。" end
-            if counts.Unconfirmed then
-                lines[#lines + 1] = "\nUnconfirmed：有负载，但端口猜测未得到确认的帧。"
-            end
+            if unconfirmed_count > 0 then lines[#lines + 1] = "\n未确认帧列在其端口猜测对应的应用行。" end
             window:set(table.concat(lines, "\n"))
         end
 
