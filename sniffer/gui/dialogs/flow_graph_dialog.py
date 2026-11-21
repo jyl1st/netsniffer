@@ -249,6 +249,7 @@ class FlowGraphDialog(QDialog):
         if graph.total > MAX_GRAPH_PACKETS:
             details.append(f"仅绘制前 {MAX_GRAPH_PACKETS:,} 帧")
         details.append("单击箭头定位到包")
+        details.append("Win 为报头原始值，未乘窗口缩放因子")
         return " · ".join(details)
 
     def _show_page(self, page: int) -> None:
