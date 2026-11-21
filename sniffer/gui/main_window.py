@@ -1,6 +1,7 @@
 import ctypes
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from ipaddress import ip_address
 from pathlib import Path
 
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self._session: CaptureSession | None = None
         self._last_settings: CaptureSettings | None = None
         self._restart_settings: CaptureSettings | None = None
+        self._restart_validation: tuple[CaptureSettings, Future[None]] | None = None
         self._stopping = False
         self._capture_initialized = False
         self._close_pending = False
@@ -97,6 +99,9 @@ class MainWindow(QMainWindow):
         analysis = self.menuBar().addMenu("分析(&A)")
         analysis.addAction("专家信息…", lambda: self._show_capture_analysis(ExpertInfoDialog))
         analysis.addAction("安全告警…", lambda: self._show_capture_analysis(SecurityAlertsDialog))
+        self._active_filter = QLabel("抓包过滤：无")
+        self._active_filter.setTextFormat(Qt.TextFormat.PlainText)
+        self.statusBar().addPermanentWidget(self._active_filter)
         self._counts = QLabel()
         self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
         self.statusBar().addPermanentWidget(self._counts)
@@ -167,7 +172,8 @@ class MainWindow(QMainWindow):
     def _update_controls(self) -> None:
         file_busy = self._file_task is not None
         idle = self._session is None
-        available = idle and not file_busy
+        validating = self._restart_validation is not None
+        available = idle and not file_busy and not validating
         has_packets = bool(self.packet_model.records)
         adapter = self.welcome.selected_adapter
         self._open_action.setEnabled(available)
@@ -178,7 +184,7 @@ class MainWindow(QMainWindow):
         )
         self._stop_action.setEnabled(not idle and not self._stopping)
         self._restart_action.setEnabled(
-            not file_busy and self._last_settings is not None and not self._stopping
+            not file_busy and not validating and self._last_settings is not None and not self._stopping
             and (idle or self._capture_initialized)
         )
         self._clear_action.setEnabled(available and has_packets)
@@ -186,7 +192,9 @@ class MainWindow(QMainWindow):
         if self._session is not None:
             device = self._session.settings.device
         self.capture_filter.set_validation_device(device if self._capture_available else None)
-        self.capture_filter.setEnabled(available and self._capture_available)
+        self.capture_filter.setEnabled(
+            not file_busy and not validating and not self._stopping and self._capture_available
+        )
         self.promiscuous.setEnabled(available and self._capture_available)
 
     def _update_counts(self, received: int, discarded: int) -> None:
@@ -375,6 +383,10 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     def stop_capture(self) -> None:
+        if self._restart_validation is not None:
+            _, job = self._restart_validation
+            self._restart_validation = None
+            job.cancel()
         if self._session is not None:
             self._stopping = True
             self._session.stop()
@@ -384,10 +396,35 @@ class MainWindow(QMainWindow):
     def restart_capture(self) -> None:
         if not self._restart_action.isEnabled() or self._last_settings is None:
             return
-        if self._session is None:
-            self._start_capture(self._last_settings)
+        settings = replace(self._last_settings, expression=self.capture_filter.currentText().strip())
+        if settings.expression:
+            # 先异步试编译，再停止旧会话。错误表达式不打断正在进行的抓包。
+            self._restart_validation = settings, self.capture_filter.validate(settings.device, settings.expression)
+            self.statusBar().showMessage("正在校验抓包过滤…")
+            self._update_controls()
         else:
-            self._restart_settings = self._last_settings
+            self._restart_capture_with(settings)
+
+    def _poll_restart_validation(self) -> None:
+        if self._restart_validation is None:
+            return
+        settings, job = self._restart_validation
+        if not job.done():
+            return
+        self._restart_validation = None
+        try:
+            job.result()
+        except Exception as error:
+            self.statusBar().showMessage(f"无法重新开始抓包。{error}")
+            self._update_controls()
+        else:
+            self._restart_capture_with(settings)
+
+    def _restart_capture_with(self, settings: CaptureSettings) -> None:
+        if self._session is None:
+            self._start_capture(settings)
+        else:
+            self._restart_settings = settings
             self.stop_capture()
 
     def clear_capture(self) -> None:
@@ -398,6 +435,7 @@ class MainWindow(QMainWindow):
             self._update_controls()
 
     def _poll_capture(self) -> None:
+        self._poll_restart_validation()
         session = self._session
         if session is None:
             return
@@ -408,6 +446,7 @@ class MainWindow(QMainWindow):
         if not self._capture_initialized:
             self._capture_initialized = True
             self._last_settings = session.settings
+            self._active_filter.setText(f"抓包过滤：{session.settings.expression or '无'}")
             self.packet_model.replace([])
             self._model_drops = 0
             self.pages.setCurrentWidget(self.packet_page)
@@ -425,6 +464,7 @@ class MainWindow(QMainWindow):
 
     def _finish_capture(self, session: CaptureSession) -> None:
         self._session = None
+        self._active_filter.setText("抓包过滤：无")
         self._stopping = False
         restart = self._restart_settings
         self._restart_settings = None

@@ -39,6 +39,9 @@ class CaptureFilterBox(QComboBox):
         self._poll.stop()
         self._workers.shutdown(wait=False, cancel_futures=True)
 
+    def validate(self, device: str, expression: str) -> Future[None]:
+        return self._workers.submit(check_capture_filter, device, expression)
+
     def _request(self) -> tuple[str, str] | None:
         text = self.currentText().strip()
         return (self._device, text) if self._device and text else None
@@ -57,7 +60,7 @@ class CaptureFilterBox(QComboBox):
             return
         request = self._request()
         if request is not None:
-            self._job = request, self._workers.submit(check_capture_filter, *request)
+            self._job = request, self.validate(*request)
             self._poll.start()
 
     def _finish(self) -> None:
