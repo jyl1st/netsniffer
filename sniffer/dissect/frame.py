@@ -61,6 +61,11 @@ def dissect_frame(
     if record.stream_id is not None and record.summary.flow is not None:
         protocol = record.summary.flow.protocol
         children.append(span.field(f"{protocol}.stream", f"{protocol.upper()} 流编号", record.stream_id, 0, 0))
+    for owner in record.process_owners:
+        fields = [span.field("proc.pid", "PID", owner.pid, 0, 0)]
+        if owner.name is not None:
+            fields.append(span.field("proc.name", "进程名", owner.name, 0, 0))
+        children.append(Field("proc", f"进程 · {owner.label}", None, 0, 0, tuple(fields)))
     link = registry.dispatch("link", record.linktype, span)
     application = record.tcp_application
     if application is not None:

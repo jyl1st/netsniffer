@@ -9,7 +9,8 @@ from sniffer.analysis.streams import StreamIndex
 from sniffer.gui.dialogs.packet_colors import DEFAULT_COLORS, readable_text
 from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
 
-HEADERS = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "Info")
+HEADERS = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "进程", "Info")
+PROCESS_COLUMN = HEADERS.index("进程")
 COLOR_ALIASES = {"mDNS": "DNS", "ICMPv6": "ICMP"}
 
 
@@ -63,9 +64,11 @@ class PacketTableModel(QAbstractTableModel):
             return None
         if index.column() == 1:
             return self._display_time(row)
+        if index.column() == PROCESS_COLUMN:
+            return "、".join(owner.label for owner in record.process_owners)
         return (
             row + 1, None, summary.source, summary.destination,
-            record.protocol, record.wire_length, record.info,
+            record.protocol, record.wire_length, None, record.info,
         )[index.column()]
 
     def _display_time(self, row: int) -> str:
@@ -170,5 +173,5 @@ class PacketTable(QTableView):
         self.verticalHeader().setDefaultSectionSize(26)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((64, 112, 177, 177, 88, 76, 180)):
+        for column, width in enumerate((64, 112, 177, 177, 88, 76, 156, 180)):
             self.setColumnWidth(column, width)

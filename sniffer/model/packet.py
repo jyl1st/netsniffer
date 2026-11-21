@@ -3,6 +3,7 @@ from decimal import Decimal
 from ipaddress import ip_address
 from struct import unpack_from
 
+from sniffer.analysis.process_map import ProcessMatch, ProcessOwner
 from sniffer.analysis.streams import StreamIndex, TransportFlow
 from sniffer.analysis.tcp import TcpApplication, TcpSegment
 from sniffer.dissect.app_detect import identify_application
@@ -46,6 +47,13 @@ class PacketRecord:
     # 编号由帧入库时的抓包顺序决定，不属于帧本身。
     stream_id: int | None = field(default=None, compare=False)
     tcp_application: TcpApplication | None = field(default=None, compare=False)
+    processes: tuple[ProcessMatch, ...] = field(default=(), compare=False)
+
+    @property
+    def process_owners(self) -> tuple[ProcessOwner, ...]:
+        if not self.processes:
+            return ()
+        return tuple(dict.fromkeys(match.owner for match in self.processes))
 
     @property
     def protocol(self) -> str:

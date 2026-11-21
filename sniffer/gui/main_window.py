@@ -18,10 +18,11 @@ from sniffer.filter.fields import known_field
 from sniffer.gui.capture_filter import CaptureFilterBox
 from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
+from sniffer.gui.dialogs.process_streams import ProcessStreamsDialog
 from sniffer.gui.display_filter import DisplayFilterController
 from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_inspector import PacketInspector
-from sniffer.gui.packet_table import HEADERS, PacketTable, PacketTableModel, TimeMode
+from sniffer.gui.packet_table import HEADERS, PROCESS_COLUMN, PacketTable, PacketTableModel, TimeMode
 from sniffer.gui.welcome_page import WelcomePage
 from sniffer.model.packet import PacketRecord
 
@@ -141,6 +142,7 @@ class MainWindow(QMainWindow):
             action.setChecked(mode == TimeMode.FIRST)
             action.triggered.connect(lambda _checked, choice=mode: self._set_time_mode(choice))
         view.addAction("着色规则…", self._edit_colors)
+        view.addAction("按进程查看 TCP 流…", self._show_process_streams)
 
     def _set_time_mode(self, mode: TimeMode) -> None:
         if mode == TimeMode.ABSOLUTE:
@@ -218,6 +220,7 @@ class MainWindow(QMainWindow):
         row = self.packet_model.record_index(index.row())
         record = self.packet_model.records[row]
         summary = record.summary
+        owners = record.process_owners
         column = index.column()
         name, value = "frame.number", row + 1
         if column in (2, 3):
@@ -240,10 +243,23 @@ class MainWindow(QMainWindow):
                 name, value = protocol, None
         elif column == 5:
             name, value = "frame.len", record.wire_length
+        elif column == PROCESS_COLUMN and len(owners) == 1:
+            name, value = "proc.pid", owners[0].pid
         menu = QMenu(self.packet_table)
         follow = None
         if record.stream_id is not None and summary.flow is not None:
             follow = menu.addAction(f"追踪 {summary.flow.protocol.upper()} 流…")
+        if owners:
+            if len(owners) == 1:
+                actions = menu
+            else:
+                actions = menu.addMenu("按此进程过滤")
+            for owner in owners:
+                label = "按此进程过滤" if len(owners) == 1 else owner.label
+                actions.addAction(label, lambda _checked=False, pid=owner.pid: self.display_filter.apply_expression(
+                    f"proc.pid == {pid}"
+                ))
+        if follow is not None or owners:
             menu.addSeparator()
         self.display_filter.add_field_actions(menu, name, value)
         chosen = menu.exec(self.packet_table.viewport().mapToGlobal(position))
@@ -261,6 +277,14 @@ class MainWindow(QMainWindow):
         dialog = FollowStreamDialog(records, flow.protocol, number, self)
         dialog.exec()
         dialog.deleteLater()
+
+    def _show_process_streams(self) -> None:
+        dialog = ProcessStreamsDialog(tuple(self.packet_model.records), self)
+        dialog.exec()
+        number = dialog.stream_number
+        dialog.deleteLater()
+        if number is not None:
+            self.display_filter.apply_expression(f"tcp.stream == {number}")
 
     def _show_interfaces(self) -> None:
         self.pages.setCurrentWidget(self.welcome)

@@ -115,3 +115,11 @@ TCP 重组让跨段字段可用于显示过滤，也引入了两个回归。第�
 从包列表右键打开追踪窗口，主窗口随即应用 `tcp.stream == N` 或 `udp.stream == N`，追踪内容取自打开时完整抓包中的匹配帧。两端使用不同颜色，方向选择同时作用于预览和保存。ASCII 与十六进制保存为带方向标签的文本。原始字节模式用转义预览，保存为二进制并跳过未捕获的区间。长流分页预览和整流导出共用同一份数据，整理和写文件均在后台执行。
 
 以 `samples/tcp_retransmission.pcap` 验证完整的 HTTP 请求和应答，重传段只计一次。离屏 Qt 验证了 TCP 和 UDP 的右键入口、自动过滤、方向分色、三种格式、单向二进制保存及跨页预览。
+
+### 进程映射
+
+实时抓包期间每秒在独立线程读取一次套接字快照，抓包线程入队时按协议和两端实际地址查询。优先查带远端地址的套接字，UDP 可按已绑定的本地端点查找，TCP 监听套接字用于标记入站初始 SYN。通配绑定只匹配同地址族且属于本机网卡的地址。同一套接字键有多个候选或 PID 不可确定时留空。回环通信可关联两端的进程。离线文件保留抓包当时的字节，进程标签属于本次实时会话的元数据。
+
+进程视图按抓包时已关联的 PID 汇总 TCP 流、对端、包数和线上帧字节数。双击后使用流号查看完整的已捕获流，包括未关联 PID 的帧。采样间隔内开始并结束的连接可能没有标签。Windows 可进一步用 ETW 的 TCP/IP 连接事件缩短关联盲区。 [psutil 套接字 API](https://psutil.io/api/#psutil.net_connections) · [Windows ETW TCP/IP 事件](https://learn.microsoft.com/en-us/windows/win32/etw/tcpip)
+
+阶段 4 验收让 Chrome 访问两个本机 HTTP 测试端口，并通过 Npcap 回环抓取 33 帧。`proc.name == "chrome.exe"` 命中 20 帧，进程视图列出 3 条 TCP 流，远端地址覆盖两个测试端口。右键按 PID 过滤、双击流应用显示过滤以及 Follow Stream 还原 HTTP 请求与应答均通过。 [进程视图验收截图](images/phase4-loopback-process-streams.png)

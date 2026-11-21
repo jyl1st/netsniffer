@@ -46,6 +46,7 @@ mdns
 ntp ntp.flags.li ntp.flags.mode ntp.flags.vn ntp.incomplete ntp.org ntp.poll ntp.precision ntp.rec
 ntp.refid ntp.reftime ntp.rootdelay ntp.rootdispersion ntp.stratum ntp.xmt
 null null.family null.incomplete
+proc proc.name proc.pid
 quic quic.dcid quic.flags quic.scid quic.version
 ssdp ssdp.body ssdp.header ssdp.header.name ssdp.headers_incomplete ssdp.host ssdp.man ssdp.mx
 ssdp.request.method ssdp.request.uri ssdp.response.code ssdp.response.phrase ssdp.st ssdp.version

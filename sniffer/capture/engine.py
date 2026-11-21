@@ -1,5 +1,5 @@
 from ctypes import POINTER, byref, c_ubyte, create_string_buffer, string_at
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -8,6 +8,8 @@ from scapy.all import conf
 from scapy.error import Scapy_Exception
 from scapy.utils import decode_locale_str
 
+from sniffer.analysis.process_map import ProcessMapper
+from sniffer.analysis.tcp import ACK, SYN
 from sniffer.analysis.tcp_application import TcpApplicationTracker
 from sniffer.capture.bpf import install_capture_filter
 from sniffer.model.packet import PacketRecord
@@ -35,6 +37,7 @@ class CaptureSession:
         self.error: str | None = None
         self._queue: Queue[PacketRecord] = Queue(maxsize=4096)
         self._tcp_applications = TcpApplicationTracker()
+        self._process_map = ProcessMapper()
 
     def start(self) -> None:
         Thread(target=self._run, name="NetSniffer capture", daemon=True).start()
@@ -63,6 +66,13 @@ class CaptureSession:
             raw = string_at(data, header.caplen)
             timestamp = Decimal(header.ts.tv_sec) + Decimal(header.ts.tv_usec).scaleb(-6)
             record = PacketRecord.from_bytes(timestamp, raw, linktype, header.len)
+            flow = record.summary.flow
+            if flow is not None:
+                segment = record.summary.tcp
+                initial_syn = segment is not None and segment.flags & (SYN | ACK) == SYN
+                matches = self._process_map.match(flow, initial_syn=initial_syn)
+                if matches:
+                    record = replace(record, processes=matches)
             try:
                 self._queue.put_nowait(self._tcp_applications.process(record))
             except Full:
@@ -77,12 +87,14 @@ class CaptureSession:
                 raise OSError("Npcap 不可用。请安装 Npcap 后重新启动。")
             # 句柄由此线程拥有，启动失败和正常停止都由上下文管理器释放。
             with conf.L2listen(iface=self.settings.device, promisc=self.settings.promiscuous) as listener:
+                Thread(target=self._process_map.run, args=(self._stop,), name="NetSniffer process map", daemon=True).start()
                 self._capture(listener)
         except (OSError, Scapy_Exception, ValueError) as error:
             self.error = str(error)
         except Exception as error:
             self.error = f"{type(error).__name__}: {error}"
         finally:
+            self._stop.set()
             self.done.set()
 
     def _capture(self, listener) -> None:
