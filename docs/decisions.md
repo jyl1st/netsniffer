@@ -242,7 +242,7 @@ NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号�
 python -m PyInstaller --noconfirm --clean packaging/netsniffer.spec
 ```
 
-修复后的 `dist/NetSniffer.exe` 为 46,900,144 字节（44.73 MiB）。构建启用单文件、图标、Windows GUI 子系统与 `requireAdministrator` 清单，关闭 UPX。检查了包内的 Scapy Windows/libpcap 加载模块和 Qt `qwindows.dll`，并确认未收录 Npcap DLL 或驱动。Qt 的虚拟键盘插件会引入 QtQuick 和 QtQml，规格文件排除了这些组件。运行时由目标机器单独安装 Npcap。全量 `pytest` 通过 134 项。
+本轮 ICU 修复版的 `dist/NetSniffer.exe` 为 46,900,144 字节（44.73 MiB）。构建启用单文件、图标、Windows GUI 子系统与 `requireAdministrator` 清单，关闭 UPX。检查了包内的 Scapy Windows/libpcap 加载模块和 Qt `qwindows.dll`，并确认未收录 Npcap DLL 或驱动。Qt 的虚拟键盘插件会引入 QtQuick 和 QtQml，规格文件排除了这些组件。运行时由目标机器单独安装 Npcap。此轮全量 `pytest` 通过 134 项。
 
 静态依赖复核确认 EXE 自带 Python 3.12 运行时、标准库、PySide6、Scapy 和全部 55 个项目模块。旧构建仅检查 DLL 名称时通过，但实机导入 `QtWidgets` 报“找不到指定的程序”。对比入口点后发现，依赖分析从开发工具的 Poppler 目录收录了同名 `icuuc.dll`。它仅导出了带版本后缀的部分 ICU 入口，而 Qt 需要 Windows 自带的无后缀入口。规格文件将构建进程的 DLL 搜索范围限制在 Windows 和当前 Python 环境，并排除 Windows 自带的 ICU DLL。重建后核对 Qt、ICU 和 C++ 运行时入口点通过。
 
@@ -267,4 +267,27 @@ C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.26100.4-0\MpOav.dll
 
 用户随后在同一隔离启动的 EXE 中完成界面操作并提交验收截图。`security_demo.pcap` 的安全告警共 5 条，SYN 扫描警告列出开放端口 10003、10014，三条凭据告警均已打码。显示过滤 `tcp.flags.syn && !tcp.flags.ack` 在 60 帧中命中 23 帧。`tcp_http.pcap` 的追踪窗口可看到 HTTP 请求、`200 OK` 响应及正文，时序图显示 6 帧并标注三次握手。`expert_events.pcap` 分别显示重传、零窗口、RST 和重复 ACK。 [隔离环境下的安全告警截图](images/phase7-exe-clean.png)
 
-WLAN 抓包截图显示接收 2,627 帧、丢弃 0 帧，所选进程关联 23 条 TCP 流。BPF 输入显示有效，但同一截图仍含 SSDP 1900 流量，无法据此确认当前抓包句柄使用了 443 端口过滤。点击「重新开始」会复用上一轮的抓包参数，复测新表达式应先停止，再填写表达式并点击「开始」。本轮未取得 PCAPNG 导出文件或 Wireshark 重读截图，也未取得时序图和专家信息点击定位的前后对照。
+旧版 WLAN 抓包截图显示接收 2,627 帧、丢弃 0 帧，所选进程关联 23 条 TCP 流。BPF 输入显示有效，但同一截图仍含 SSDP 1900 流量，无法据此确认当时的抓包句柄使用了 443 端口过滤。该版本的「重新开始」会复用上一轮抓包参数。
+
+### 重新开始与 BPF
+
+修复前「重新开始」复用了上一轮 BPF。修复后点击时读取当前输入，用上一次抓包的网卡异步编译。编译通过后才替换会话，编译失败会在状态栏提示并保留正在进行的抓包。状态栏常驻显示实际生效的表达式，无活跃过滤时显示「无」。Npcap 在新会话的抓包句柄上安装 BPF 成功后才更新该状态及替换包列表。回归测试覆盖抓包中使用新表达式重新开始，以及运行中和已停止时拒绝无效表达式。
+
+用源码界面驱动 Npcap 实抓本机回环。无过滤时捕获到自发的 UDP，提交无效 BPF 时原会话继续。随后以 `tcp port 443` 重新开始，同时发出测试 UDP 和 TCP 流量。新会话得到 9 帧，状态栏显示实际表达式。用界面导出 PCAPNG，TShark 4.4.5 重读为 9 帧，`!(tcp.port == 443)` 命中 0 帧。隔离启动的 EXE 在 WLAN 上复验 BPF、归档截图，以及用 Wireshark 4.4.5 打开 EXE 导出的 PCAPNG 待补录。
+
+### 阶段 5 统计窗口补齐
+
+在功能冻结前按协议层级、会话、端点、IO 图表顺序补齐。各窗口对显示范围的快照后台统计，保留原始帧号和整份抓包的时间原点。字节数使用线路上的原始帧长。会话 A 取快照首次观察到的源端，TShark 对照时统一双向端点顺序。应用层标签取单帧摘要，IO 按左闭右开区间分桶，无时间戳的帧不进入 IO 分桶，空桶隐含为零。
+
+在 TShark 4.4.5 上执行 `python -m tools.compare_stats_tshark --benchmark ../phase6-benchmark-100k.pcap`。对照使用空的个人配置目录，避免 Lua 后置解析器影响协议树。性能样例为阶段 6 的 100,000 帧合成文件，读入后只计统计耗时，五次取中位数。
+
+| 统计 | TShark 完全一致的样例 | 100,000 帧耗时 |
+| --- | --- | ---: |
+| 协议层级 | `io,phs` 9/17 | 134.8 ms |
+| 会话 | `conv,ip`、`conv,ipv6`、`conv,tcp`、`conv,udp` 各 17/17 | 140.6 ms |
+| 端点 | `endpoints,ip`、`endpoints,tcp`、`endpoints,udp` 各 17/17 | 127.7 ms |
+| IO 图表 | `io,stat,1` 17/17 | 65.9 ms |
+
+协议层级的 Frame、链路、网络和传输层帧数及字节数一致。8 份样例的差异来自应用识别及 Wireshark 的额外子层。例如，非标准端口的 SSH 横幅在 NetSniffer 归为 SSH，TShark 默认归为 TCP 数据。ARP 冲突帧在 TShark 带 `text` 节点。HTTP 重传、跨段 HTTP/TLS/DNS、FTP 及表单子层采用各自的识别与重组口径。对照脚本逐条列出差异。[协议层级](images/phase5-stats-hierarchy.png) · [会话](images/phase5-stats-conversations.png) · [端点](images/phase5-stats-endpoints.png) · [IO 图表](images/phase5-stats-iograph.png)
+
+按原命令重建包含四项统计的单文件 EXE，大小 62,802,814 字节（59.89 MiB），SHA-256 为 `E5A5F6219120B4A79AC9BE80EB049B7A2E505A4740E96F83A5DFD843A5267999`。包内已核对 pyqtgraph、NumPy、Scapy 和 Qt Windows 平台插件，仍由系统提供 Npcap 与 ICU。清空进程环境变量后首次出现主窗口耗时 2,231 ms，排除 UAC 等待。外部模块列表与上一版相同。全量 `pytest` 通过 144 项。四个统计窗口的截图由原生 Windows Qt 平台打开 `security_demo.pcap` 获得。源码交互复测中，四个窗口均对显示过滤剩下的 23 帧统计，IO 标记、时序图箭头和专家条目均可定位到原始帧。打包版全量交互冒烟尚待复验。
