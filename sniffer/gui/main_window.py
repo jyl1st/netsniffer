@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 from scapy.all import conf
 
@@ -16,12 +16,14 @@ from sniffer.capture.interfaces import list_adapters
 from sniffer.capture.pcap_io import read_capture_preview, write_capture
 from sniffer.filter.fields import known_field
 from sniffer.gui.capture_filter import CaptureFilterBox
+from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
 from sniffer.gui.display_filter import DisplayFilterController
 from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_inspector import PacketInspector
 from sniffer.gui.packet_table import HEADERS, PacketTable, PacketTableModel, TimeMode
 from sniffer.gui.welcome_page import WelcomePage
+from sniffer.model.packet import PacketRecord
 
 
 def startup_status() -> tuple[bool, str]:
@@ -238,7 +240,27 @@ class MainWindow(QMainWindow):
                 name, value = protocol, None
         elif column == 5:
             name, value = "frame.len", record.wire_length
-        self.display_filter.field_menu(name, value, self.packet_table.viewport().mapToGlobal(position))
+        menu = QMenu(self.packet_table)
+        follow = None
+        if record.stream_id is not None and summary.flow is not None:
+            follow = menu.addAction(f"追踪 {summary.flow.protocol.upper()} 流…")
+            menu.addSeparator()
+        self.display_filter.add_field_actions(menu, name, value)
+        chosen = menu.exec(self.packet_table.viewport().mapToGlobal(position))
+        selected_follow = follow is not None and chosen == follow
+        menu.deleteLater()
+        if selected_follow:
+            self._follow_stream(record)
+
+    def _follow_stream(self, record: PacketRecord) -> None:
+        flow, number = record.summary.flow, record.stream_id
+        if flow is None or number is None:
+            return
+        records = tuple(self.packet_model.records)
+        self.display_filter.apply_expression(f"{flow.protocol}.stream == {number}")
+        dialog = FollowStreamDialog(records, flow.protocol, number, self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _show_interfaces(self) -> None:
         self.pages.setCurrentWidget(self.welcome)

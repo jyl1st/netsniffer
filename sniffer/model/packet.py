@@ -33,6 +33,7 @@ class PacketSummary:
     error: bool = False
     flow: TransportFlow | None = None
     tcp: TcpSegment | None = None
+    udp_payload: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,7 +209,8 @@ def _transport(
         if protocol == 6 and checksum_end is not None:
             sequence, = unpack_from("!I", raw, offset + 4)
             tcp = TcpSegment(sequence, value, payload_start, end, transport_info)
-        return PacketSummary(source, destination, name, info, reset or bad_checksum, flow, tcp)
+        udp_payload = (payload_start, end) if protocol == 17 and has_base_header else None
+        return PacketSummary(source, destination, name, info, reset or bad_checksum, flow, tcp, udp_payload)
     if protocol in (1, 58) and size >= 2:
         if size >= 4 and network.complete:
             if protocol == 1:

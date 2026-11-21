@@ -216,10 +216,16 @@ class DisplayFilterBar(QWidget):
             self.editor.setCursorPosition(token.start() + len(name))
 
     def field_menu(self, name: str, value: FieldValue, position) -> None:
+        menu = QMenu(self)
+        self.add_field_actions(menu, name, value)
+        if not menu.isEmpty():
+            menu.exec(position)
+        menu.deleteLater()
+
+    def add_field_actions(self, menu: QMenu, name: str, value: FieldValue) -> None:
         expression = field_expression(name, value)
         if expression is None:
             return
-        menu = QMenu(self)
         for title, action, base in (
             ("作为过滤器应用", self.apply_expression, self._applied),
             ("准备过滤器", self.prepare_expression, self.editor.text().strip()),
@@ -229,7 +235,6 @@ class DisplayFilterBar(QWidget):
             use_or = f"({base}) || ({expression})" if base else expression
             for label, result in (("选中", expression), ("非选中", f"!({expression})"), ("与", use_and), ("或", use_or)):
                 options.addAction(label, lambda _checked=False, text=result, run=action: run(text))
-        menu.exec(position)
 
 
 def _inside_quotes(source: str) -> bool:
