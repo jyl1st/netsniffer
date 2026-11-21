@@ -5,10 +5,10 @@ from dataclasses import replace
 from ipaddress import ip_address
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QActionGroup, QKeySequence
+from PySide6.QtCore import QSize, QTimer, Qt
+from PySide6.QtGui import QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QStackedWidget, QVBoxLayout,
+    QAbstractItemView, QCheckBox, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSizePolicy, QStackedWidget, QVBoxLayout,
     QWidget,
 )
 from scapy.all import conf
@@ -18,6 +18,7 @@ from sniffer.capture.interfaces import list_adapters
 from sniffer.capture.pcap_io import read_capture_preview, write_capture
 from sniffer.filter.fields import known_field
 from sniffer.gui.capture_filter import CaptureFilterBox
+from sniffer.gui.dialogs.about import AboutDialog
 from sniffer.gui.dialogs.capture_analysis import ExpertInfoDialog, SecurityAlertsDialog
 from sniffer.gui.dialogs.flow_graph_dialog import FlowGraphDialog
 from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
@@ -28,6 +29,7 @@ from sniffer.gui.display_filter import DisplayFilterController
 from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_inspector import PacketInspector
 from sniffer.gui.packet_table import HEADERS, PROCESS_COLUMN, PacketTable, PacketTableModel, TimeMode
+from sniffer.gui.theme import ACCENT, ElidedLabel, toolbar_icon
 from sniffer.gui.welcome_page import WelcomePage
 from sniffer.model.packet import PacketRecord
 
@@ -88,12 +90,16 @@ class MainWindow(QMainWindow):
         self.welcome.capture_requested.connect(self.start_capture)
         self.welcome.selection_changed.connect(self._update_controls)
 
-        self._setup_toolbar()
         files = self.menuBar().addMenu("文件(&F)")
-        self._open_action = files.addAction("打开抓包文件…", self.open_capture)
+        self._open_action = files.addAction(toolbar_icon("open"), "打开抓包文件…", self.open_capture)
+        self._open_action.setIconText("打开")
         self._open_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Open))
-        self._save_action = files.addAction("另存为…", self.save_capture)
-        self._save_action.setShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs))
+        self._open_action.setToolTip("打开抓包文件（Ctrl+O）")
+        self._save_action = files.addAction(toolbar_icon("save"), "另存为…", self.save_capture)
+        self._save_action.setIconText("保存")
+        self._save_action.setShortcuts([QKeySequence("Ctrl+S"), QKeySequence(QKeySequence.StandardKey.SaveAs)])
+        self._save_action.setToolTip("保存抓包文件（Ctrl+S）")
+        self._setup_toolbar()
         self._setup_view_menu()
         statistics = self.menuBar().addMenu("统计(&S)")
         statistics.addAction("TCP 时序图…", self._show_flow_graph)
@@ -104,12 +110,8 @@ class MainWindow(QMainWindow):
         analysis = self.menuBar().addMenu("分析(&A)")
         analysis.addAction("专家信息…", lambda: self._show_capture_analysis(ExpertInfoDialog))
         analysis.addAction("安全告警…", lambda: self._show_capture_analysis(SecurityAlertsDialog))
-        self._active_filter = QLabel("抓包过滤：无")
-        self._active_filter.setTextFormat(Qt.TextFormat.PlainText)
-        self.statusBar().addPermanentWidget(self._active_filter)
-        self._counts = QLabel()
-        self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
-        self.statusBar().addPermanentWidget(self._counts)
+        self.menuBar().addMenu("帮助(&H)").addAction("关于 NetSniffer", self._show_about)
+        self._setup_status_bar()
         self.statusBar().showMessage(self._startup_notice)
         self._update_counts(0, 0)
         self.packet_model.rowsInserted.connect(self._visible_rows_added)
@@ -121,14 +123,56 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._poll_file)
         self._timer.start(100)
 
+    def _setup_status_bar(self) -> None:
+        self._status_message = ElidedLabel()
+        self._status_message.setTextFormat(Qt.TextFormat.PlainText)
+        self._status_message.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._status_message.setMinimumWidth(190)
+        self._status_message.hide()
+        self.statusBar().addPermanentWidget(self._status_message, 1)
+        self.statusBar().messageChanged.connect(self._show_status_message)
+        self._capture_status = QLabel()
+        self._active_adapter = ElidedLabel()
+        self._active_filter = ElidedLabel("抓包过滤：无")
+        for label in (self._active_adapter, self._active_filter):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._active_adapter.setMinimumWidth(92)
+        self._active_filter.setMinimumWidth(175)
+        self._counts = QLabel()
+        self._counts.setToolTip("丢弃包括应用队列、会话容量和停止时 Npcap 报告的缓冲区丢包。")
+        self.statusBar().addPermanentWidget(self._capture_status)
+        self.statusBar().addPermanentWidget(QLabel("│"))
+        self.statusBar().addPermanentWidget(self._active_adapter, 1)
+        self.statusBar().addPermanentWidget(QLabel("│"))
+        self.statusBar().addPermanentWidget(self._active_filter, 2)
+        self.statusBar().addPermanentWidget(QLabel("│"))
+        self.statusBar().addPermanentWidget(self._counts)
+
+    def _show_status_message(self, message: str) -> None:
+        self._status_message.setText(message)
+        self._status_message.setToolTip(message)
+        self._status_message.setVisible(bool(message))
+
     def _setup_toolbar(self) -> None:
         toolbar = self.addToolBar("抓包")
         toolbar.setMovable(False)
-        self._interfaces_action = toolbar.addAction("网卡", self._show_interfaces)
-        self._start_action = toolbar.addAction("开始", self.start_capture)
-        self._stop_action = toolbar.addAction("停止", self.stop_capture)
-        self._restart_action = toolbar.addAction("重新开始", self.restart_capture)
-        self._clear_action = toolbar.addAction("清空", self.clear_capture)
+        toolbar.setIconSize(QSize(18, 18))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.addAction(self._open_action)
+        toolbar.addAction(self._save_action)
+        toolbar.addSeparator()
+        self._interfaces_action = toolbar.addAction(toolbar_icon("adapter"), "网卡", self._show_interfaces)
+        self._interfaces_action.setToolTip("选择抓包网卡")
+        self._start_action = toolbar.addAction(toolbar_icon("start"), "开始", self.start_capture)
+        self._start_action.setToolTip("开始抓包（Ctrl+E）")
+        self._stop_action = toolbar.addAction(toolbar_icon("stop"), "停止", self.stop_capture)
+        self._stop_action.setToolTip("停止抓包（Ctrl+E）")
+        QShortcut(QKeySequence("Ctrl+E"), self, self._toggle_capture)
+        self._restart_action = toolbar.addAction(toolbar_icon("restart"), "重新开始", self.restart_capture)
+        self._restart_action.setToolTip("使用当前抓包过滤器重新开始")
+        self._clear_action = toolbar.addAction(toolbar_icon("clear"), "清空", self.clear_capture)
+        self._clear_action.setToolTip("清空当前包列表")
         toolbar.addSeparator()
 
         toolbar.addWidget(QLabel("抓包过滤"))
@@ -142,6 +186,17 @@ class MainWindow(QMainWindow):
         self.auto_scroll = QCheckBox("自动滚动")
         self.auto_scroll.setChecked(True)
         toolbar.addWidget(self.auto_scroll)
+
+    def _toggle_capture(self) -> None:
+        if self._stop_action.isEnabled():
+            self.stop_capture()
+        elif self._start_action.isEnabled():
+            self.start_capture()
+
+    def _show_about(self) -> None:
+        dialog = AboutDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _setup_view_menu(self) -> None:
         view = self.menuBar().addMenu("视图(&V)")
@@ -201,6 +256,13 @@ class MainWindow(QMainWindow):
             not file_busy and not validating and not self._stopping and self._capture_available
         )
         self.promiscuous.setEnabled(available and self._capture_available)
+        active = not idle and self._capture_initialized
+        dot = ACCENT if active else "#748789"
+        state = "抓包中" if active else "已停止"
+        self._capture_status.setText(f'<span style="color:{dot}">●</span> {state}')
+        name = next((item.name for item in self.welcome.adapters if item.device == device), "—")
+        self._active_adapter.setText(f"网卡：{name}")
+        self._active_adapter.setToolTip(self._active_adapter.text())
 
     def _update_counts(self, received: int, discarded: int) -> None:
         self._received, self._discarded = received, discarded
@@ -467,11 +529,12 @@ class MainWindow(QMainWindow):
             self._capture_initialized = True
             self._last_settings = session.settings
             self._active_filter.setText(f"抓包过滤：{session.settings.expression or '无'}")
+            self._active_filter.setToolTip(self._active_filter.text())
             self.packet_model.replace([])
             self._model_drops = 0
             self.pages.setCurrentWidget(self.packet_page)
             if not self._stopping:
-                self.statusBar().showMessage("正在抓包")
+                self.statusBar().clearMessage()
             self._update_controls()
 
         batch = session.drain()
@@ -485,6 +548,7 @@ class MainWindow(QMainWindow):
     def _finish_capture(self, session: CaptureSession) -> None:
         self._session = None
         self._active_filter.setText("抓包过滤：无")
+        self._active_filter.setToolTip(self._active_filter.text())
         self._stopping = False
         restart = self._restart_settings
         self._restart_settings = None
@@ -494,8 +558,10 @@ class MainWindow(QMainWindow):
         if restart is not None:
             self._start_capture(restart)
             return
-        message = session.error or "抓包已停止"
-        self.statusBar().showMessage(message)
+        if session.error:
+            self.statusBar().showMessage(session.error)
+        else:
+            self.statusBar().clearMessage()
         self._update_controls()
 
     def open_capture(self) -> None:

@@ -19,6 +19,11 @@ try:
     analysis = Analysis(
         [str(project / "main.py")],
         pathex=[str(project)],
+        datas=[
+            (str(project / "sniffer/gui/theme.qss"), "sniffer/gui"),
+            (str(project / "sniffer/gui/icons"), "sniffer/gui/icons"),
+            (str(project / "packaging/netsniffer.ico"), "packaging"),
+        ],
         hiddenimports=["scapy.arch.libpcap", "scapy.arch.windows", "scapy.libs.winpcapy"],
         excludes=[
             "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",

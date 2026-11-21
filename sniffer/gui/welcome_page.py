@@ -1,10 +1,11 @@
 from collections import deque
 
-from PySide6.QtCore import QPointF, QSignalBlocker, QTimer, Signal
+from PySide6.QtCore import QPointF, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QHBoxLayout,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -13,6 +14,13 @@ from PySide6.QtWidgets import (
 )
 
 from sniffer.capture.interfaces import Adapter, preferred_adapter, read_counters
+from sniffer.gui.theme import APP_VERSION, BadgeDelegate
+
+_ADAPTER_BADGES = {
+    "有线": ("#dcefeb", "#205950"), "无线": ("#dcefeb", "#205950"),
+    "虚拟": ("#edf2f2", "#475e60"), "回环": ("#edf2f2", "#475e60"),
+    "其他": ("#edf2f2", "#475e60"),
+}
 
 
 class TrafficPlot(QWidget):
@@ -62,14 +70,26 @@ class WelcomePage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 16)
-        title = QLabel("选择抓包网卡")
+        heading = QHBoxLayout()
+        title = QLabel("NetSniffer")
         font = title.font()
-        font.setPointSize(16)
+        font.setPointSize(22)
         font.setBold(True)
         title.setFont(font)
-        layout.addWidget(title)
+        heading.addWidget(title)
+        version = QLabel(APP_VERSION)
+        version.setObjectName("versionBadge")
+        heading.addWidget(version, 0, Qt.AlignmentFlag.AlignVCenter)
+        heading.addStretch()
+        layout.addLayout(heading)
+
+        description = QLabel("捕获网络数据包，查看协议、连接时序与安全告警。")
+        description.setObjectName("welcomeDescription")
+        description.setWordWrap(True)
+        layout.addWidget(description)
 
         hint = QLabel(notice or "双击网卡开始抓包。流量曲线显示最近 30 秒的收发速率。")
+        hint.setObjectName("welcomeHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.table = QTableWidget(len(adapters), 6)
@@ -78,6 +98,8 @@ class WelcomePage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setItemDelegateForColumn(2, BadgeDelegate(_ADAPTER_BADGES, self.table))
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(42)
         header = self.table.horizontalHeader()

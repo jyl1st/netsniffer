@@ -33,10 +33,12 @@ if __name__ == "__main__":
 from PySide6.QtWidgets import QApplication
 
 from sniffer.gui.main_window import create_main_window
+from sniffer.gui.theme import apply_theme
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = create_main_window()
     window.show()
     return app.exec()

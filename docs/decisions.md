@@ -295,3 +295,11 @@ C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.26100.4-0\MpOav.dll
 协议层级的 Frame、链路、网络和传输层帧数及字节数一致。8 份样例的差异来自应用识别及 Wireshark 的额外子层。例如，非标准端口的 SSH 横幅在 NetSniffer 归为 SSH，TShark 默认归为 TCP 数据。ARP 冲突帧在 TShark 带 `text` 节点。HTTP 重传、跨段 HTTP/TLS/DNS、FTP 及表单子层采用各自的识别与重组口径。对照脚本逐条列出差异。[协议层级](images/phase5-stats-hierarchy.png) · [会话](images/phase5-stats-conversations.png) · [端点](images/phase5-stats-endpoints.png) · [IO 图表](images/phase5-stats-iograph.png)
 
 按原命令重建包含四项统计的单文件 EXE，大小 62,802,814 字节（59.89 MiB），SHA-256 为 `E5A5F6219120B4A79AC9BE80EB049B7A2E505A4740E96F83A5DFD843A5267999`。包内已核对 pyqtgraph、NumPy、Scapy 和 Qt Windows 平台插件，仍由系统提供 Npcap 与 ICU。清空进程环境变量后首次出现主窗口耗时 2,231 ms，排除 UAC 等待。外部模块列表与上一版相同。全量 `pytest` 通过 144 项。四个统计窗口的截图由原生 Windows Qt 平台打开 `security_demo.pcap` 获得。源码交互复测中，四个窗口均对显示过滤剩下的 23 帧统计，IO 标记、时序图箭头和专家条目均可定位到原始帧。打包版全量交互冒烟尚待复验。
+
+### 录制版界面与打包复核
+
+最后一轮外观调整集中使用 Fusion、Microsoft YaHei UI（后备 Segoe UI）和青绿色强调色。中文表头与显示列菜单来自同一份列名，显示过滤字段名维持原有定义。包列表使用 Qt 调色板填充连续选区，未选中行仍从模型取得原着色。工具栏沿用原操作，快捷键为打开 `Ctrl+O`、保存 `Ctrl+S`、开始或停止 `Ctrl+E`。
+
+在 Windows 的 Qt 原生平台分别以有效缩放 100% 和 150% 渲染并查看实际窗口。工具栏、状态栏、欢迎页和关于窗口未见控件重叠，长地址或信息按表格工具提示显示全文。复核了包列表着色、字节高亮和协议树双向定位、显示过滤红绿边框、TCP 时序图、IO 图表、Follow Stream 双向分色及严重程度徽标。三张验收图均为实际程序窗口。欢迎页使用示例网卡地址和流量，主界面使用本机 Npcap 回环 TCP/443 实抓。[欢迎页](images/phase7-ui-welcome.png) · [抓包主界面](images/phase7-ui-main.png) · [关于](images/phase7-ui-about.png)
+
+重新打包后全量 `pytest` 通过 144 项。最终 EXE 为 62,823,080 字节（59.91 MiB），SHA-256 为 `AEB2D6EF40DC0DE5E2502D3F789927C7CDA6262905A0B3D9F5494097958CA251`。核对了 11 份内嵌主题和图标资源。用清空开发环境变量的管理员脚本启动，约 2,570 ms 出现主窗口。实查窗口图标、工具栏 SVG、配色和网卡曲线均正常。模块列表仍只有 EXE 本身及 Microsoft Defender 的 `MpOav.dll` 位于 Windows 系统及 `_MEI` 目录以外。

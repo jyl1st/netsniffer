@@ -6,14 +6,14 @@ from enum import Enum
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QStyle, QStyledItemDelegate, QTableView
 
 from sniffer.analysis.process_map import ProcessMatch
 from sniffer.analysis.streams import StreamIndex
 from sniffer.gui.dialogs.packet_colors import DEFAULT_COLORS, readable_text
 from sniffer.model.packet import MAX_BYTES, MAX_PACKETS, PacketRecord
 
-HEADERS = ("No.", "Time", "Source", "Destination", "Protocol", "Length", "进程", "Info")
+HEADERS = ("序号", "时间", "源地址", "目的地址", "协议", "长度", "进程", "信息")
 PROCESS_COLUMN = HEADERS.index("进程")
 COLOR_ALIASES = {"mDNS": "DNS", "ICMPv6": "ICMP"}
 
@@ -272,10 +272,20 @@ class PacketTableModel(QAbstractTableModel):
             self.endRemoveRows()
 
 
+class _PacketRowDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index) -> None:
+        super().initStyleOption(option, index)
+        # 交给 Fusion 填充选区，仅去掉会把整行切成单格的焦点和悬停边框。
+        option.state &= ~(QStyle.StateFlag.State_HasFocus | QStyle.StateFlag.State_MouseOver)
+        option.showDecorationSelected = True
+
+
 class PacketTable(QTableView):
     def __init__(self, model: PacketTableModel, parent=None):
         super().__init__(parent)
         self.setModel(model)
+        self.setItemDelegate(_PacketRowDelegate(self))
+        self.setShowGrid(False)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)

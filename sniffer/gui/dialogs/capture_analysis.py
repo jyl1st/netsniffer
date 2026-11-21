@@ -11,12 +11,19 @@ from PySide6.QtWidgets import (
 from sniffer.analysis.expert import ExpertKind, ExpertSeverity, analyze_expert
 from sniffer.analysis.ids import SecurityAlert, analyze_alerts
 from sniffer.gui.packet_table import PacketTableModel
+from sniffer.gui.theme import BadgeDelegate
 from sniffer.model.packet import PacketRecord
 
 _TABLE_COLUMNS = ("相对时间（秒）", "类型", "严重程度", "来源", "描述（已打码）", "相关帧数")
 _TREE_COLUMNS = ("严重程度 / 类型", "帧号", "简述")
 _DISPLAY = Qt.ItemDataRole.DisplayRole
 _TOOLTIP = Qt.ItemDataRole.ToolTipRole
+_SEVERITY_BADGES = {
+    "高": ("#f9e1e2", "#9a2935"),
+    "警告": ("#fcebd7", "#974b16"),
+    "Warning": ("#fcebd7", "#974b16"),
+    "Note": ("#e5edf5", "#405875"),
+}
 
 
 def _timed_alerts(records: tuple[PacketRecord, ...]) -> tuple[tuple[SecurityAlert, Decimal | None], ...]:
@@ -218,6 +225,7 @@ class SecurityAlertsDialog(_AnalysisDialog):
         self.view = QTableView()
         self._model = _AlertTable(self.view)
         self.view.setModel(self._model)
+        self.view.setItemDelegateForColumn(2, BadgeDelegate(_SEVERITY_BADGES, self.view))
         self.view.setAlternatingRowColors(True)
         self.view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -246,6 +254,7 @@ class ExpertInfoDialog(_AnalysisDialog):
         self.view = QTreeView()
         self._model = _ExpertTree(self.view)
         self.view.setModel(self._model)
+        self.view.setItemDelegateForColumn(0, BadgeDelegate(_SEVERITY_BADGES, self.view))
         self.view.setUniformRowHeights(True)
         self.view.setAlternatingRowColors(True)
         self.view.setExpandsOnDoubleClick(True)
