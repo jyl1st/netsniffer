@@ -141,3 +141,33 @@ def conversations(snapshot: StatsSnapshot) -> dict[str, list[Conversation]]:
                 entries[key] = Conversation(source, destination, stream, snapshot.origin)
             entries[key].add(source, packet)
     return {name: list(entries.values()) for name, entries in groups.items()}
+
+
+@dataclass(slots=True)
+class EndpointStats:
+    address: Address
+    sent: Counts = field(default_factory=Counts)
+    received: Counts = field(default_factory=Counts)
+
+    @property
+    def frames(self) -> int:
+        return self.sent.frames + self.received.frames
+
+    @property
+    def bytes(self) -> int:
+        return self.sent.bytes + self.received.bytes
+
+
+def endpoints(snapshot: StatsSnapshot) -> dict[str, list[EndpointStats]]:
+    """每帧给源端累加发送量、给目的端累加接收量。"""
+    groups: dict[str, dict[Address, EndpointStats]] = {name: {} for name in ADDRESS_GROUPS}
+    for _, packet in snapshot.frames:
+        for group, source, destination, _ in _address_pairs(packet):
+            entries = groups[group]
+            if source not in entries:
+                entries[source] = EndpointStats(source)
+            if destination not in entries:
+                entries[destination] = EndpointStats(destination)
+            entries[source].sent.add(packet.wire_length)
+            entries[destination].received.add(packet.wire_length)
+    return {name: list(entries.values()) for name, entries in groups.items()}

@@ -7,12 +7,13 @@ import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sniffer.analysis.stats import StatsSnapshot, conversations, protocol_hierarchy
+from sniffer.analysis.stats import StatsSnapshot, conversations, endpoints, protocol_hierarchy
 from sniffer.capture.pcap_io import read_capture
 
 _PROTOCOL = {"Ethernet": "eth", "IPv4": "ip", "IPv6": "ipv6", "Loopback": "null"}
 _HIERARCHY_ROW = re.compile(r"^( *)\S+\s+frames:(\d+)\s+bytes:(\d+)\s*$")
 _CONVERSATIONS = {"IPv4": "ip", "IPv6": "ipv6", "TCP": "tcp", "UDP": "udp"}
+_ENDPOINTS = {"IPv4": "ip", "TCP": "tcp", "UDP": "udp"}
 _CONV_ROW = re.compile(
     r"^\s*(\S+)\s+<->\s+(\S+)\s+(\d+)\s+([\d,]+) bytes\s+(\d+)\s+([\d,]+) bytes"
     r"\s+(\d+)\s+([\d,]+) bytes(?:\s|$)"
@@ -89,6 +90,26 @@ def _our_conversations(entries) -> dict:
                             (row.reverse.frames, row.reverse.bytes), (row.frames, row.bytes)) for row in entries)
 
 
+def _tshark_endpoints(output: str, group: str) -> dict:
+    rows = {}
+    has_port = group in ("TCP", "UDP")
+    for line in _section(output, f"{group} Endpoints"):
+        parts = line.split()
+        if not parts or parts[0].startswith(("Filter:", "|")):
+            continue
+        column = 2 if has_port else 1
+        if len(parts) != column + 6:
+            raise ValueError(f"无法读取 TShark 端点行: {line}")
+        port = int(parts[1]) if has_port else None
+        rows[(parts[0], port)] = tuple(int(item.replace(",", "")) for item in parts[column:])
+    return rows
+
+
+def _our_endpoints(entries) -> dict:
+    return {row.address: (row.frames, row.bytes, row.sent.frames, row.sent.bytes,
+                          row.received.frames, row.received.bytes) for row in entries}
+
+
 def _report(label: str, ours: dict, theirs: dict) -> bool:
     differences = [key for key in ours.keys() | theirs.keys() if ours.get(key) != theirs.get(key)]
     if not differences:
@@ -109,7 +130,8 @@ def main() -> int:
     if not samples:
         parser.error(f"未找到样例: {args.samples}")
 
-    labels = ["io,phs", *(f"conv,{protocol}" for protocol in _CONVERSATIONS.values())]
+    labels = ["io,phs", *(f"conv,{protocol}" for protocol in _CONVERSATIONS.values()),
+              *(f"endpoints,{protocol}" for protocol in _ENDPOINTS.values())]
     matches = dict.fromkeys(labels, 0)
     with TemporaryDirectory() as config:
         # 使用空的个人配置目录，避免用户安装的 Lua 后置解析器改变协议层级。
@@ -126,6 +148,10 @@ def main() -> int:
             for group, protocol in _CONVERSATIONS.items():
                 label = f"conv,{protocol}"
                 matches[label] += _report(label, _our_conversations(ours[group]), _tshark_conversations(output, group))
+            our_endpoints = endpoints(snapshot)
+            for group, protocol in _ENDPOINTS.items():
+                label = f"endpoints,{protocol}"
+                matches[label] += _report(label, _our_endpoints(our_endpoints[group]), _tshark_endpoints(output, group))
     for label, count in matches.items():
         print(f"{label}: {count}/{len(samples)} 份样例完全一致")
     return 0

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
-from sniffer.analysis.stats import ADDRESS_GROUPS, Conversation, Counts, conversations, protocol_hierarchy
+from sniffer.analysis.stats import ADDRESS_GROUPS, Conversation, Counts, EndpointStats, conversations, endpoints, protocol_hierarchy
 from sniffer.gui.packet_table import PacketTableModel
 
 
@@ -226,3 +226,40 @@ class ConversationStatsDialog(_AddressStatsDialog):
         elif graph is not None and selected == graph:
             self.requested_stream = row.stream
             self.accept()
+
+
+_ENDPOINT_COLUMNS = (
+    ("地址", lambda row: row.address[0]), ("端口", lambda row: row.address[1]),
+    ("总帧数", lambda row: row.frames), ("总字节数", lambda row: row.bytes),
+    ("发送帧数", lambda row: row.sent.frames), ("发送字节数", lambda row: row.sent.bytes),
+    ("接收帧数", lambda row: row.received.frames), ("接收字节数", lambda row: row.received.bytes),
+)
+
+
+class EndpointStatsDialog(_AddressStatsDialog):
+    def __init__(self, packets, parent=None):
+        super().__init__(packets, "端点", endpoints, _ENDPOINT_COLUMNS, parent)
+        self.resize(960, 500)
+        for index in range(self.view.count()):
+            table = self.view.widget(index)
+            table.setColumnWidth(0, 190)
+            if index < 2:
+                table.setColumnHidden(1, True)
+        self.refresh()
+
+    def open_row_menu(self, group: str, row: EndpointStats, position) -> None:
+        menu = QMenu(self)
+        apply = menu.addAction("以此端点过滤")
+        if menu.exec(position) != apply:
+            return
+        address, port = row.address
+        ip = "ipv6" if ":" in address else "ip"
+        if port is None:
+            self.apply_filter(f"{ip}.addr == {address}")
+        else:
+            # 地址、端口按同一方向匹配，避免另一端恰好使用相同端口时误选。
+            protocol = group.lower()
+            self.apply_filter(
+                f"({ip}.src == {address} && {protocol}.srcport == {port}) || "
+                f"({ip}.dst == {address} && {protocol}.dstport == {port})"
+            )

@@ -2,7 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-from sniffer.analysis.stats import Counts, StatsSnapshot, conversations, protocol_hierarchy
+from sniffer.analysis.stats import Counts, StatsSnapshot, conversations, endpoints, protocol_hierarchy
 from sniffer.capture.pcap_io import read_capture
 from sniffer.gui.packet_table import PacketTableModel
 
@@ -48,3 +48,14 @@ def test_conversations_preserve_origin_on_filtered_reverse_frames():
     assert tcp.stream == 0
     assert tcp.forward == Counts(2, 151) and tcp.reverse == Counts()
     assert tcp.start == Decimal("0.01")
+
+
+def test_endpoints_split_source_and_destination_counts():
+    groups = endpoints(StatsSnapshot.from_records(read_capture(SAMPLES / "dns.pcap")))
+    assert not groups["TCP"]
+    client, server = groups["UDP"]
+    assert client.address[0] == "192.0.2.10" and server.address[1] == 53
+    assert client.sent == server.received == Counts(1, 75)
+    assert client.received == server.sent == Counts(1, 106)
+    assert (client.frames, client.bytes) == (2, 181)
+    assert all(row.address[1] is None for row in groups["IPv4"])

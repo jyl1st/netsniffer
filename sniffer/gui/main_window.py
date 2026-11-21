@@ -23,7 +23,7 @@ from sniffer.gui.dialogs.flow_graph_dialog import FlowGraphDialog
 from sniffer.gui.dialogs.follow_stream import FollowStreamDialog
 from sniffer.gui.dialogs.packet_colors import PacketColorsDialog
 from sniffer.gui.dialogs.process_streams import ProcessStreamsDialog
-from sniffer.gui.dialogs.statistics import ConversationStatsDialog, ProtocolHierarchyDialog
+from sniffer.gui.dialogs.statistics import ConversationStatsDialog, EndpointStatsDialog, ProtocolHierarchyDialog
 from sniffer.gui.display_filter import DisplayFilterController
 from sniffer.gui.filter_bar import DisplayFilterBar
 from sniffer.gui.packet_inspector import PacketInspector
@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         statistics.addAction("TCP 时序图…", self._show_flow_graph)
         statistics.addAction("协议层级…", lambda: self._show_statistics(ProtocolHierarchyDialog))
         statistics.addAction("会话…", lambda: self._show_statistics(ConversationStatsDialog))
+        statistics.addAction("端点…", lambda: self._show_statistics(EndpointStatsDialog))
         analysis = self.menuBar().addMenu("分析(&A)")
         analysis.addAction("专家信息…", lambda: self._show_capture_analysis(ExpertInfoDialog))
         analysis.addAction("安全告警…", lambda: self._show_capture_analysis(SecurityAlertsDialog))
