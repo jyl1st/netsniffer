@@ -85,6 +85,22 @@ def http_packets(*, retransmit: bool = False) -> list[Packet]:
     return packets
 
 
+def flow_graph_packets() -> list[Packet]:
+    client = 1001 + len(HTTP_REQUEST)
+    server = 2001 + len(HTTP_RESPONSE)
+    return [
+        *http_packets(),
+        tcp_segment(8080, "FA", client, server),
+        tcp_segment(8080, "A", server, client + 1, reply=True),
+        tcp_segment(8080, "FA", server, client + 1, reply=True),
+        tcp_segment(8080, "A", client + 1, server + 1),
+        *tcp_handshake(8081),
+        tcp_segment(8081, "R", 2001, reply=True),
+        tcp_segment(8082, "PA", 7000, 3000, reply=True) / b"midstream",
+        tcp_segment(8082, "A", 3000, 7009),
+    ]
+
+
 def dns_packets() -> list[Packet]:
     question = DNSQR(qname=HOSTNAME, qtype="A")
     return [
@@ -203,6 +219,7 @@ def make_samples(output_dir: Path) -> None:
     )
     traces = {
         "tcp_http": http_packets(),
+        "tcp_flow_graph": flow_graph_packets(),
         "dns": dns_packets(),
         "tls_client_hello": tls_packets(),
         "application_protocols": application_packets(),

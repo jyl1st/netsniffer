@@ -10,6 +10,7 @@ def test_samples_are_reproducible_and_readable(tmp_path):
 
     expected_counts = {
         "tcp_http": 6,
+        "tcp_flow_graph": 16,
         "dns": 2,
         "tls_client_hello": 4,
         "application_protocols": 7,
