@@ -1,7 +1,8 @@
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-from sniffer.analysis.stats import Counts, StatsSnapshot, protocol_hierarchy
+from sniffer.analysis.stats import Counts, StatsSnapshot, conversations, protocol_hierarchy
 from sniffer.capture.pcap_io import read_capture
 from sniffer.gui.packet_table import PacketTableModel
 
@@ -25,3 +26,25 @@ def test_stats_snapshot_counts_only_visible_frames_with_original_numbers():
     assert snapshot.origin == records[0].timestamp
     nodes = protocol_hierarchy(snapshot)
     assert nodes[("Frame",)] == nodes[("Frame", "Ethernet", "ARP")] == Counts(2, 84)
+
+
+def test_conversations_split_wire_counts_and_keep_stream_number():
+    records = read_capture(SAMPLES / "tcp_http.pcap")
+    groups = conversations(StatsSnapshot.from_records(records))
+    ip, = groups["IPv4"]
+    tcp, = groups["TCP"]
+    assert (tcp.a, tcp.b, tcp.stream) == (("192.0.2.10", 49152), ("192.0.2.20", 8080), 0)
+    assert tcp.forward == ip.forward == Counts(4, 262)
+    assert tcp.reverse == ip.reverse == Counts(2, 151)
+    assert (tcp.frames, tcp.bytes, tcp.start, tcp.duration) == (6, 413, Decimal(0), Decimal("0.05"))
+    assert ip.a == ("192.0.2.10", None) and ip.stream is None
+
+
+def test_conversations_preserve_origin_on_filtered_reverse_frames():
+    records = read_capture(SAMPLES / "tcp_http.pcap")
+    snapshot = StatsSnapshot(((2, records[1]), (5, records[4])), records[0].timestamp)
+    tcp, = conversations(snapshot)["TCP"]
+    assert tcp.a == ("192.0.2.20", 8080)
+    assert tcp.stream == 0
+    assert tcp.forward == Counts(2, 151) and tcp.reverse == Counts()
+    assert tcp.start == Decimal("0.01")

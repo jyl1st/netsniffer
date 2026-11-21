@@ -1,9 +1,12 @@
 """对抓包快照中已有的帧摘要做统计。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sniffer.model.packet import LINKTYPE_ETHERNET, LINKTYPE_LOOP, LINKTYPE_NULL, PacketRecord
+
+ADDRESS_GROUPS = ("IPv4", "IPv6", "TCP", "UDP")
+Address = tuple[str, int | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,3 +75,69 @@ def protocol_hierarchy(snapshot: StatsSnapshot) -> dict[tuple[str, ...], Counts]
                 nodes[prefix] = Counts()
             nodes[prefix].add(packet.wire_length)
     return nodes
+
+
+def _address_pairs(packet: PacketRecord):
+    summary = packet.summary
+    ip = _ip_layer(packet)
+    if ip is not None:
+        yield ip, (summary.source, None), (summary.destination, None), None
+    if summary.flow is not None:
+        yield (summary.flow.protocol.upper(), (summary.source, summary.flow.source[1]),
+               (summary.destination, summary.flow.destination[1]), packet.stream_id)
+
+
+@dataclass(slots=True)
+class Conversation:
+    a: Address
+    b: Address
+    stream: int | None
+    origin: Decimal | None
+    forward: Counts = field(default_factory=Counts)
+    reverse: Counts = field(default_factory=Counts)
+    first: Decimal | None = None
+    last: Decimal | None = None
+
+    @property
+    def frames(self) -> int:
+        return self.forward.frames + self.reverse.frames
+
+    @property
+    def bytes(self) -> int:
+        return self.forward.bytes + self.reverse.bytes
+
+    @property
+    def start(self) -> Decimal | None:
+        if self.first is not None and self.origin is not None:
+            return self.first - self.origin
+        return None
+
+    @property
+    def duration(self) -> Decimal | None:
+        if self.first is not None and self.last is not None:
+            return self.last - self.first
+        return None
+
+    def add(self, source: Address, packet: PacketRecord) -> None:
+        counts = self.forward if source == self.a else self.reverse
+        counts.add(packet.wire_length)
+        timestamp = packet.timestamp
+        if timestamp is not None:
+            if self.first is None or timestamp < self.first:
+                self.first = timestamp
+            if self.last is None or timestamp > self.last:
+                self.last = timestamp
+
+
+def conversations(snapshot: StatsSnapshot) -> dict[str, list[Conversation]]:
+    """回包归入同一会话。显示方向以快照里首次观察到的源端为 A。"""
+    groups: dict[str, dict[int | frozenset[Address], Conversation]] = {name: {} for name in ADDRESS_GROUPS}
+    for _, packet in snapshot.frames:
+        for group, source, destination, stream in _address_pairs(packet):
+            # TCP/UDP 复用入库分配的流号。缺少流号时仍能按双向端点统计。
+            key = stream if stream is not None else frozenset((source, destination))
+            entries = groups[group]
+            if key not in entries:
+                entries[key] = Conversation(source, destination, stream, snapshot.origin)
+            entries[key].add(source, packet)
+    return {name: list(entries.values()) for name, entries in groups.items()}
