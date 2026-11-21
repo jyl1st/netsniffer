@@ -228,6 +228,8 @@ NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号�
 
 #### Wireshark 4.4.5 实机验收
 
-`v0.9` 的合成演示抓包 `phase6-lua-demo.pcap` 在包列表显示 `netsniffer.app` 自定义列。第 1 帧的协议树显示应用为 HTTP、识别依据为内容特征、端口猜测为 TLS、端口不符为 `True`。工具菜单的统计窗口显示已识别 11 帧，端口不符 1 帧。HTTP 共 2 帧，其中 1 帧端口不符。 [自定义列和协议树](images/phase6-lua-column.png) · [v0.9 统计窗口](images/phase6-lua-stats.png)
+`v0.9` 的合成演示抓包 `phase6-lua-demo.pcap` 在包列表显示 `netsniffer.app` 自定义列。第 1 帧的协议树显示应用为 HTTP、识别依据为内容特征、端口猜测为 TLS、端口不符为 `True`。工具菜单的统计窗口显示已识别 11 帧，端口不符 1 帧。HTTP 共 2 帧，其中 1 帧端口不符。 [自定义列和协议树](images/phase6-lua-column.png)
 
 拆分口径后，TShark 4.4.5 对 WLAN `phase4-wlan-proc-sni.pcap` 的 9,122 帧统计得出 `netsniffer.mismatch == 1` 为 **0** 帧，`netsniffer.unconfirmed == 1` 为 **4,436** 帧。使用独立的 Wireshark 配置目录加载工作区 Lua，以避免已安装的 v0.9 插件参与统计。17 个合成样例的 `app` 和 `basis` 仍为 **214/214 帧一致**。`v0.9` 远端标签仍指向原验收提交 `3aaeeff`。
+
+更新后的插件在新一轮 Wireshark WLAN 实抓中验证了两个字段和统计分列。整份抓包共 3,928 帧，已识别 1,045 帧，端口不符 0 帧，未确认 1,551 帧（39.5%）。加上 `tcp.port == 443` 后，未确认剩 1,525 帧，与统计窗口的 TLS 候选行一致。另 26 帧归入 QUIC 候选。 [新版 WLAN 统计窗口](images/phase6-lua-stats.png)
