@@ -233,3 +233,38 @@ NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号�
 拆分口径后，TShark 4.4.5 对 WLAN `phase4-wlan-proc-sni.pcap` 的 9,122 帧统计得出 `netsniffer.mismatch == 1` 为 **0** 帧，`netsniffer.unconfirmed == 1` 为 **4,436** 帧。使用独立的 Wireshark 配置目录加载工作区 Lua，以避免已安装的 v0.9 插件参与统计。17 个合成样例的 `app` 和 `basis` 仍为 **214/214 帧一致**。`v0.9` 远端标签仍指向原验收提交 `3aaeeff`。
 
 更新后的插件在新一轮 Wireshark WLAN 实抓中验证了两个字段和统计分列。整份抓包共 3,928 帧，已识别 1,045 帧，端口不符 0 帧，未确认 1,551 帧（39.5%）。加上 `tcp.port == 443` 后，未确认剩 1,525 帧，与统计窗口的 TLS 候选行一致。另 26 帧归入 QUIC 候选。 [新版 WLAN 统计窗口](images/phase6-lua-stats.png)
+
+## 阶段 7 · Windows 单文件打包
+
+在仓库根目录激活 `netsniffer` 环境后构建。实测使用 Python 3.12.16 和 PyInstaller 6.22.3。
+
+```powershell
+python -m PyInstaller --noconfirm --clean packaging/netsniffer.spec
+```
+
+修复后的 `dist/NetSniffer.exe` 为 46,900,144 字节（44.73 MiB）。构建启用单文件、图标、Windows GUI 子系统与 `requireAdministrator` 清单，关闭 UPX。检查了包内的 Scapy Windows/libpcap 加载模块和 Qt `qwindows.dll`，并确认未收录 Npcap DLL 或驱动。Qt 的虚拟键盘插件会引入 QtQuick 和 QtQml，规格文件排除了这些组件。运行时由目标机器单独安装 Npcap。全量 `pytest` 通过 134 项。
+
+静态依赖复核确认 EXE 自带 Python 3.12 运行时、标准库、PySide6、Scapy 和全部 55 个项目模块。旧构建仅检查 DLL 名称时通过，但实机导入 `QtWidgets` 报“找不到指定的程序”。对比入口点后发现，依赖分析从开发工具的 Poppler 目录收录了同名 `icuuc.dll`。它仅导出了带版本后缀的部分 ICU 入口，而 Qt 需要 Windows 自带的无后缀入口。规格文件将构建进程的 DLL 搜索范围限制在 Windows 和当前 Python 环境，并排除 Windows 自带的 ICU DLL。重建后核对 Qt、ICU 和 C++ 运行时入口点通过。
+
+GUI 子系统启动时没有控制台。启动入口为未捕获异常安装全局钩子，把异常堆栈追加到 `%LOCALAPPDATA%\NetSniffer\crash.log`，并通过 Windows 对话框提示日志路径。
+
+干净系统使用 VirtualBox 7.2.4 的 2 vCPU、4 GiB 内存虚拟机，安装 Windows 11 Enterprise LTSC Evaluation（x64，安装镜像版本 26100.1742）。已准备 Npcap 1.90 安装程序和合成样例。冷启动实测与两端冒烟检查待补录。
+
+虚拟机从安装 ISO 成功引导，安装界面达到 75% 后出现持续黑屏。VirtualBox 日志显示宿主使用 Hyper-V 后端，并多次报告虚拟机计时追赶失败。按范围调整，暂停虚拟机配置，改做本机的环境独立性测试。Windows 沙盒场景未测，包括未装 Npcap 时的提示和安装后抓包。
+
+### 环境独立性复测
+
+在从临时管理员 CMD 启动的进程中，`PATH` 只保留 `System32`、`Windows`、`Wbem`，清空 `PYTHONPATH`、`PYTHONHOME`、`QT_PLUGIN_PATH`、`QT_QPA_PLATFORM_PLUGIN_PATH` 和 `CONDA_PREFIX`。系统和用户环境变量未修改。修复版从启动子进程到首次检测到主窗口耗时 2,003 ms，包含单文件解压，未计入 UAC 等待。欢迎页正常显示网卡和流量曲线。
+
+管理员 PowerShell 模块筛选输出如下，去除表格行尾空格。`MpOav.dll` 来自 Microsoft Defender 的反恶意软件平台。结果没有 Conda、`envs` 或外置 Python 目录。
+
+```text
+FileName
+--------
+E:\课程\软件安全与网络\netsniffer\dist\NetSniffer.exe
+C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.26100.4-0\MpOav.dll
+```
+
+用户随后在同一隔离启动的 EXE 中完成界面操作并提交验收截图。`security_demo.pcap` 的安全告警共 5 条，SYN 扫描警告列出开放端口 10003、10014，三条凭据告警均已打码。显示过滤 `tcp.flags.syn && !tcp.flags.ack` 在 60 帧中命中 23 帧。`tcp_http.pcap` 的追踪窗口可看到 HTTP 请求、`200 OK` 响应及正文，时序图显示 6 帧并标注三次握手。`expert_events.pcap` 分别显示重传、零窗口、RST 和重复 ACK。 [隔离环境下的安全告警截图](images/phase7-exe-clean.png)
+
+WLAN 抓包截图显示接收 2,627 帧、丢弃 0 帧，所选进程关联 23 条 TCP 流。BPF 输入显示有效，但同一截图仍含 SSDP 1900 流量，无法据此确认当前抓包句柄使用了 443 端口过滤。点击「重新开始」会复用上一轮的抓包参数，复测新表达式应先停止，再填写表达式并点击「开始」。本轮未取得 PCAPNG 导出文件或 Wireshark 重读截图，也未取得时序图和专家信息点击定位的前后对照。
