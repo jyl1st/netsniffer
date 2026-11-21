@@ -196,3 +196,32 @@ Windows 下导入后分别分析三次，表中为纯分析耗时中位数，文
 | 合成 `phase6-benchmark-100k.pcap` | 100,000 | 324.0 ms | 148.0 ms |
 
 WLAN 离线复查中，ARP、SYN 扫描、明文凭据告警各 0 条，扫描规则在该样本无误报。这份抓包使用 `tcp` 抓包过滤，含 0 个 ARP 帧，无法验证真实 ARP 误报率。代理状态以当时的捕获环境为准，无法从离线文件独立核对。专家信息为重传 473 条、重复 ACK 113 条、零窗口 0 条、RST 54 条。
+
+### TCP 保活对照
+
+负载为 0 或 1 字节、序号等于本方向已见下一序号减 1 且没有 SYN、FIN 或 RST 的段标记为「TCP 保活」（Note）。它不推进已发送区间。对端刚发过保活时，序号仍在本方向下一序号、确认号及非零窗口与本方向上一个 ACK 一致的纯 ACK 视为保活回应，从重复 ACK 排除。保活回应不单独出现在专家信息面板。11 帧合成复现中，两边均检出 3 个保活，重传和重复 ACK 均为 0。TShark 另外报告 3 个保活 ACK。 [Wireshark TCP 分析规则](https://www.wireshark.org/docs/wsug_html_chunked/ChAdvTCPAnalysis.html)
+
+`phase4-wlan-proc-sni.pcap` 共 9,122 帧。以下 TShark 数字使用本机 4.4.5 和表内显示过滤式对每个类别单独计数。
+
+| 类别 | NetSniffer | TShark 4.4.5 | TShark 过滤式 |
+|---|---:|---:|---|
+| 重传（含快速重传） | 454 | 459 | `tcp.analysis.retransmission \|\| tcp.analysis.fast_retransmission` |
+| 重复 ACK | 92 | 87 | `tcp.analysis.duplicate_ack` |
+| 零窗口 | 0 | 0 | `tcp.analysis.zero_window` |
+| RST | 54 | 54 | `tcp.flags.reset==1` |
+| 保活 | 24 | 24 | `tcp.analysis.keep_alive` |
+
+NetSniffer 重传要求整段序号已被捕获，Wireshark 依据预期序号及快速重传时序等规则分流，并将伪重传放入另一字段。NetSniffer 的重复 ACK 比较确认号和原始窗口，Wireshark 还检查已建立的序号状态，并考虑 SACK 和零窗口。以上是两套规则的口径差异，未对差异帧逐条调整。 [新版专家信息截图](images/phase6-expert.png)
+
+### Wireshark Lua 应用识别
+
+`wireshark_plugin/netsniffer_appid.lua` 在 Wireshark 4.4.5 以 postdissector 读取本帧 TCP/UDP 负载，按强内容特征、经内容校验的端口候选、弱 QUIC 长头特征依次判定。`netsniffer.app` 与 `netsniffer.basis` 给出应用和依据。`netsniffer.port_guess` 单独记录端口猜测。有负载且存在端口候选时，内容支持另一协议或无法确认候选，均会标记 `netsniffer.mismatch=True`。空负载只保留端口猜测。8080 在两边的端口表内都映射为 HTTP，确认 HTTP 时不算不符。合成演示包第 1 帧把 HTTP 发往 TCP 443，内容判定 HTTP、端口猜测 TLS，因而不符。
+
+执行 `python -m tools.compare_lua_appid`，用 TShark 4.4.5 对 `samples/` 全部 **17 个 pcap、214 帧**比较 `app` 和 `basis`，一致率为 **100%**，单帧口径无不一致帧。脚本另列 Python 流级结果。`tcp_reassembly.pcap` 的帧 5、10、15 分别补齐 TLS、HTTP 和 DNS，`plaintext_credentials.pcap` 的帧 5、10 及 `security_demo.pcap` 的帧 50、55 也涉及重组或沿用流级识别。这些是单帧插件与完整 NetSniffer 的范围差异。TLS 记录头可先识别应用，跨段 SNI、重组 HTTP 头部及 DNS 消息由 Python 重组路径提供。
+
+#### 安装与演示
+
+1. 在 Wireshark 4.4.5 打开「帮助 → 关于 Wireshark → 文件夹」，确认 `Personal Lua Plugins`。Windows 本机的个人目录是 `%APPDATA%\Wireshark\plugins`，与 `tshark -G folders` 输出一致。
+2. 把 `netsniffer_appid.lua` 放入该目录，重启 Wireshark，打开合成样例。也可直接用 `tshark -X lua_script:wireshark_plugin/netsniffer_appid.lua` 做离线对照。
+3. 选中有识别结果的帧，展开「NetSniffer 应用识别」，右键应用识别字段并选「应用为列」。可用 `netsniffer.mismatch == 1` 找到内容与端口不符的帧。`tcp_reassembly.pcap` 中的续段也可展示端口候选未确认的情况。
+4. 打开「工具 → NetSniffer 应用识别统计」。Listener 对整份抓包统计各应用帧数及端口不符数。「Unconfirmed」汇总有负载、端口不符且未确认应用的帧。 [Wireshark Lua 菜单与窗口 API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Gui.html) · [Listener API](https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Listener.html)
